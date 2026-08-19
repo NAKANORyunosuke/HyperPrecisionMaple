@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: GPL-3.0-only
 param(
     [switch]$AGM,
-    [switch]$Extended
+    [switch]$Extended,
+    [switch]$Monodromy,
+    [switch]$Benchmarks
 )
 
 $ErrorActionPreference = "Stop"
@@ -26,9 +28,16 @@ function Invoke-MapleTest([string]$Script, [string]$Marker) {
 }
 
 Invoke-MapleTest "runtests.mpl" "All regular tests passed."
+Invoke-MapleTest "monodromy_engine.mpl" "All Pfaffian monodromy engine tests passed."
 if ($AGM) {
     Invoke-MapleTest "agm.mpl" "AGM test passed."
 }
 if ($Extended) {
     Invoke-MapleTest "paper_example.mpl" "Paper example passed."
+}
+if ($Monodromy) {
+    Invoke-MapleTest "monodromy_examples.mpl" "All known monodromy examples passed."
+}
+if ($Benchmarks) {
+    Invoke-MapleTest "benchmark_pfaffian.mpl" "Pfaffian benchmark completed."
 }

@@ -6,9 +6,18 @@ option package;
 
 export
     AffineParameter, EpsilonParameter, HornSeries,
+    UserPfaffianSystem, PfaffianFromConnection,
     PDEGenerator, FindHypergeometricOrder, FindHolonomicRank,
     FindPfaffianSystem, FindRestrictedPfaffianSystem,
     ConnectionMatrices, CheckIntegrability, TransportDE,
+    CheckExactFlatness,
+    ChooseBasepoint, InitialVector,
+    SingularFactors, RestrictedSingularRoots,
+    PlanPath, ReversePath,
+    FactorizedFundamentalTransport, TransportFundamental,
+    ApplyTransport, MaterializeTransport, InverseTransport,
+    MeridianGenerators, Monodromy,
+    NumericalMonodromyRepresentation, MonodromyMatrix,
     Evaluate, HypExpand, HypFunctionExpand,
     LaurentCoefficient, LaurentPolynomial,
     HypergeometricPFQ, Hypergeometric2F1,
@@ -20,7 +29,7 @@ export
 
 local
     IsAffineParameter, AsAffineParameter, EvaluateParameter, HasEpsilon,
-    NumericSeries, RestrictZeroVariables,
+    NumericSeries, ExactParameterSeries, RestrictZeroVariables,
     ZeroIndex, UnitIndex, AddIndex, WeightDot,
     Compositions, AllMultiIndices, LexGreater,
     MultiIndexGreater, MultiIndexLess,
@@ -39,6 +48,17 @@ local
     ReductionSeries, RestrictedMatrixSeries,
     FrobeniusSolutionCoefficients, EvaluateFrobeniusSeries,
     IntegrateSegmentFrobenius, NormaliseWaypoints,
+    PolyExpression, PivotPolynomialMatrix, PivotDeterminantExpression,
+    DistanceToUnitInterval, SegmentSafety, HomotopyShortcutSampled,
+    FundamentalSolutionCoefficients, EvaluateFundamentalSeries,
+    FundamentalDifferentialResidual,
+    IntegrateSegmentFundamental, TransportFundamentalOnce,
+    ApplyFactorList, MaterializeFactorList, InvertFactorList,
+    InvertTransportHistory,
+    MatrixIdentityResidual, MakeCanonicalPath, NormalisePathArgument,
+    UnivariateMeridianLoop, MultivariateMeridianLoop, LoopSegmentsSafe,
+    SystemNVariables, SystemRank, UserConnectionMatricesInternal,
+    UserRestrictedMatrixSeries, ValidateMeridianComponent,
     EstimatePoleOrder, ChopValue, IsFiniteNumber,
     PredefinedSeries, UnitWeight, WeightRows,
     FinishPredefined, ConvertEpsilonExpression, ParseFunctionCall;
@@ -46,7 +66,15 @@ local
 local
     MakeAffineRecord, MakeHornRecord, MakeNumericHornRecord,
     MakeRREFRecord, MakePfaffianRecord, MakeCheckRecord,
-    MakeRestrictedRecord, MakeLaurentRecord;
+    MakeRestrictedRecord, MakeLaurentRecord, MakeSingularRecord,
+    MakePathPlanRecord, MakeFactorizedRecord, MakeLoopSetRecord,
+    MakeMonodromyRecord, MakeSegmentCheckRecord,
+    MakePlanDiagnosticsRecord, MakePatchHistoryRecord,
+    MakeFactorDiagnosticsRecord, MakeInverseDiagnosticsRecord,
+    MakePrecisionAttemptRecord, MakeTransportDiagnosticsRecord,
+    MakeMeridianMetadataRecord, MakeRelationRecord,
+    MakeGeneratorBundleRecord, MakeUserPfaffianRecord,
+    MakeExactFlatnessRecord;
 
 MakeAffineRecord := proc(p1, p2)
     return Record('hpType' = "AffineParameter", 'constant' = p1, 'slope' = p2);
@@ -69,10 +97,12 @@ MakeRREFRecord := proc(p1, p2, p3, p4, p5)
         'freeColumns' = p4, 'threshold' = p5);
 end proc;
 
-MakePfaffianRecord := proc(p1, p2, p3, p4, p5, p6, p7, p8, p9)
+MakePfaffianRecord := proc(p1, p2, p3, p4, p5, p6, p7, p8, p9,
+                          p10 := NULL, p11 := [], p12 := 0)
     return Record('hpType' = "PfaffianSystem", 'series' = p1, 'basis' = p2,
         'equations' = p3, 'columns' = p4, 'pivotColumns' = p5,
-        'freeColumns' = p6, 'equationRows' = p7, 'orders' = p8, 'digits' = p9);
+        'freeColumns' = p6, 'equationRows' = p7, 'orders' = p8, 'digits' = p9,
+        'exactSeries' = p10, 'exactEquations' = p11, 'closureSeed' = p12);
 end proc;
 
 MakeCheckRecord := proc(p1, p2, p3)
@@ -87,6 +117,112 @@ end proc;
 MakeLaurentRecord := proc(p1, p2, p3, p4)
     return Record('hpType' = "LaurentExpansion", 'firstOrder' = p1,
         'coefficients' = p2, 'estimatedError' = p3, 'digits' = p4);
+end proc;
+
+MakeSingularRecord := proc(p1, p2, p3, p4)
+    return Record('hpType' = "SingularDivisor", 'variables' = p1,
+        'determinant' = p2, 'factors' = p3, 'multiplicities' = p4);
+end proc;
+
+MakePathPlanRecord := proc(p1, p2, p3, p4, p5, p6)
+    return Record('hpType' = "PfaffianPathPlan", 'start' = p1,
+        'target' = p2, 'points' = p3, 'mode' = p4,
+        'pathClass' = p5, 'diagnostics' = p6);
+end proc;
+
+MakeFactorizedRecord := proc(p1, p2, p3, p4, p5, p6,
+                             p7, p8, p9)
+    return Record('hpType' = "FactorizedFundamentalTransport",
+        'factors' = p1, 'path' = p2, 'digits' = p3, 'mode' = p4,
+        'diagnostics' = p5, 'history' = p6,
+        'Apply' = p7, 'Materialize' = p8, 'Inverse' = p9);
+end proc;
+
+MakeLoopSetRecord := proc(p1, p2, p3, p4)
+    return Record('hpType' = "MeridianGeneratorSet", 'basepoint' = p1,
+        'labels' = p2, 'loops' = p3, 'metadata' = p4,
+        'generatorSetComplete' = "unknown");
+end proc;
+
+MakeMonodromyRecord := proc(p1, p2, p3, p4, p5, p6)
+    return Record('hpType' = "NumericalMonodromyRepresentation",
+        'basepoint' = p1, 'basis' = p2, 'generators' = p3,
+        'matrices' = p4, 'verifiedRelations' = p5,
+        'generatorSetComplete' = p6);
+end proc;
+
+MakeSegmentCheckRecord := proc(p1, p2, p3)
+    return Record('segment' = p1, 'minimumRestrictedRootDistance' = p2,
+        'restrictedRoots' = p3);
+end proc;
+
+MakePlanDiagnosticsRecord := proc(p1, p2, p3, p4, p5)
+    return Record('segmentsBefore' = p1, 'segmentsAfter' = p2,
+        'shortcutsAccepted' = p3, 'segmentChecks' = p4,
+        'homotopyVerification' = p5);
+end proc;
+
+MakePatchHistoryRecord := proc(p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11)
+    return Record('segment' = p1, 'segmentParameterStart' = p2,
+        'segmentParameterEnd' = p3, 'step' = p4, 'order' = p5,
+        'workingDigits' = p6, 'relativeTail' = p7,
+        'orderDiscrepancy' = p8, 'restrictedRadius' = p9,
+        'center' = p10, 'differentialResidual' = p11);
+end proc;
+
+MakeFactorDiagnosticsRecord := proc(p1)
+    return Record('factorCount' = p1);
+end proc;
+
+MakeInverseDiagnosticsRecord := proc(p1)
+    return Record('constructedAsInverse' = true, 'factorCount' = p1,
+        'historySemantics' = "reversed algebraic factor history");
+end proc;
+
+MakePrecisionAttemptRecord := proc(p1, p2, p3, p4, p5, p6)
+    return Record('attempt' = p1, 'digits' = p2, 'taylorOrder' = p3,
+        'estimatedError' = p4, 'reverseError' = p5,
+        'differentialResidual' = p6);
+end proc;
+
+MakeTransportDiagnosticsRecord := proc(p1, p2, p3, p4, p5, p6, p7, p8, p9)
+    return Record('factorCount' = p1, 'estimatedError' = p2,
+        'reverseChecked' = p3, 'reverseError' = p4,
+        'precisionEscalations' = p5, 'finalDigits' = p6,
+        'finalTaylorOrder' = p7, 'precisionHistory' = p8,
+        'maxDifferentialResidual' = p9,
+        'arithmetic' = "arbitrary-precision midpoint");
+end proc;
+
+MakeMeridianMetadataRecord := proc(p1, p2, p3, p4, p5 := 0)
+    if p5 = 0 then
+        return Record('label' = p1, 'singularPoint' = p2,
+            'transverseDirection' = p3, 'radius' = p4,
+            'orientation' = "counterclockwise");
+    end if;
+    return Record('label' = p1, 'singularPoint' = p2,
+        'transverseDirection' = p3, 'radius' = p4,
+        'orientation' = "counterclockwise", 'coordinateSlice' = p5);
+end proc;
+
+MakeRelationRecord := proc(p1, p2, p3)
+    return Record('word' = p1, 'residual' = p2, 'verified' = p3);
+end proc;
+
+MakeGeneratorBundleRecord := proc(p1, p2, p3)
+    return Record('loops' = p1, 'labels' = p2, 'transports' = p3);
+end proc;
+
+MakeUserPfaffianRecord := proc(p1, p2, p3, p4, p5, p6, p7)
+    return Record('hpType' = "UserPfaffianSystem",
+        'connection' = p1, 'variables' = p2, 'rank' = p3,
+        'basis' = p4, 'digits' = p5, 'declaredSingularFactors' = p6,
+        'exactFlatness' = p7);
+end proc;
+
+MakeExactFlatnessRecord := proc(p1, p2, p3)
+    return Record('passed' = p1, 'status' = p2,
+        'nonzeroCurvatures' = p3);
 end proc;
 
 # ---------------------------------------------------------------------------
@@ -159,6 +295,145 @@ HornSeries := proc(
         map(AsAffineParameter, lowerParameters), lowerWeights);
 end proc;
 
+CheckExactFlatness := proc(systemOrConnection, variablesArgument := [])
+    local connectionList, variableList, rank, inexact, matrixValue,
+          numeratorValue, denominatorValue, curvature, entryValue,
+          nonzeroValues, i, j, row, column;
+    try
+        if systemOrConnection:-hpType = "UserPfaffianSystem" then
+            connectionList := systemOrConnection:-connection;
+            variableList := systemOrConnection:-variables;
+        else
+            connectionList := systemOrConnection;
+            variableList := variablesArgument;
+        end if;
+    catch:
+        connectionList := systemOrConnection;
+        variableList := variablesArgument;
+    end try;
+    if not type(connectionList,list) or nops(connectionList) <> nops(variableList) or
+       nops(connectionList) = 0 then
+        error "CheckExactFlatness expects a connection-matrix list and its variables";
+    end if;
+    rank := LinearAlgebra:-RowDimension(connectionList[1]);
+    inexact := false;
+    for matrixValue in connectionList do
+        for row to rank do
+            for column to rank do
+                entryValue := normal(matrixValue[row,column]);
+                if nops(indets(entryValue,float)) > 0 then inexact := true; end if;
+                numeratorValue := numer(entryValue);
+                denominatorValue := denom(entryValue);
+                if not type(numeratorValue,
+                    polynom(anything,convert(variableList,set))) or
+                   not type(denominatorValue,
+                    polynom(anything,convert(variableList,set))) then
+                    error "user Pfaffian entries must be rational functions of the declared variables";
+                end if;
+            end do;
+        end do;
+    end do;
+    if inexact then
+        return MakeExactFlatnessRecord(false,"unknown_inexact",[]);
+    end if;
+    nonzeroValues := [];
+    for i to nops(variableList) do
+        for j from i+1 to nops(variableList) do
+            curvature := Matrix(rank,rank,datatype=anything);
+            for row to rank do
+                for column to rank do
+                    curvature[row,column] := normal(simplify(
+                        diff(connectionList[i][row,column],variableList[j])-
+                        diff(connectionList[j][row,column],variableList[i])+
+                        (connectionList[i].connectionList[j])[row,column]-
+                        (connectionList[j].connectionList[i])[row,column]));
+                    if curvature[row,column] <> 0 then
+                        nonzeroValues := [op(nonzeroValues),
+                            [i,j,row,column,curvature[row,column]]];
+                    end if;
+                end do;
+            end do;
+        end do;
+    end do;
+    if nops(nonzeroValues) = 0 then
+        return MakeExactFlatnessRecord(true,"verified_exact",[]);
+    end if;
+    return MakeExactFlatnessRecord(false,"failed_exact",nonzeroValues);
+end proc;
+
+UserPfaffianSystem := proc(
+    connectionMatrices::list,
+    variables::list,
+    {digits := 50, singularFactors := []}
+)
+    local rank, matrixValue, row, column, entryValue, basisLabels,
+          exactFlatness, i;
+    if nops(variables) = 0 or nops(connectionMatrices) <> nops(variables) then
+        error "one connection matrix is required for each variable";
+    end if;
+    if not andmap(type,variables,symbol) or
+       nops(convert(variables,set)) <> nops(variables) then
+        error "variables must be distinct unassigned symbols";
+    end if;
+    if digits < 1 then error "digits must be positive"; end if;
+    if not type(singularFactors,list) then
+        error "singularFactors must be a list of polynomial factors";
+    end if;
+    if not type(connectionMatrices[1],Matrix) then
+        error "connection matrices must be Maple Matrix objects";
+    end if;
+    rank := LinearAlgebra:-RowDimension(connectionMatrices[1]);
+    if rank < 1 or LinearAlgebra:-ColumnDimension(connectionMatrices[1]) <> rank then
+        error "connection matrices must be nonempty and square";
+    end if;
+    for matrixValue in connectionMatrices do
+        if not type(matrixValue,Matrix) or
+           LinearAlgebra:-RowDimension(matrixValue) <> rank or
+           LinearAlgebra:-ColumnDimension(matrixValue) <> rank then
+            error "all connection matrices must have the same square shape";
+        end if;
+        for row to rank do
+            for column to rank do
+                entryValue := normal(matrixValue[row,column]);
+                if denom(entryValue) = 0 then
+                    error "a connection entry has an identically zero denominator";
+                end if;
+            end do;
+        end do;
+    end do;
+    basisLabels := [seq(cat("e",i),i=1..rank)];
+    exactFlatness := CheckExactFlatness(connectionMatrices,variables);
+    return MakeUserPfaffianRecord(map(copy,connectionMatrices),variables,
+        rank,basisLabels,digits,singularFactors,exactFlatness);
+end proc;
+
+PfaffianFromConnection := proc(
+    connectionMatrices::list,
+    variables::list,
+    {digits := 50, singularFactors := []}
+)
+    return UserPfaffianSystem(connectionMatrices,variables,
+        'digits'=digits,'singularFactors'=singularFactors);
+end proc;
+
+SystemNVariables := proc(system)
+    if system:-hpType = "UserPfaffianSystem" then
+        return nops(system:-variables);
+    elif system:-hpType = "PfaffianSystem" then
+        return system:-series:-nvariables;
+    end if;
+    error "expected a Pfaffian system";
+end proc;
+
+SystemRank := proc(system)
+    if system:-hpType = "UserPfaffianSystem" then
+        return system:-rank;
+    elif system:-hpType = "PfaffianSystem" then
+        return nops(system:-basis);
+    end if;
+    error "expected a Pfaffian system";
+end proc;
+
 HasEpsilon := proc(series)
     local parameter;
     for parameter in [op(series:-upperParameters), op(series:-lowerParameters)] do
@@ -175,6 +450,17 @@ NumericSeries := proc(series, epsilon)
         series:-upperWeights,
         map(p -> EvaluateParameter(p, epsilon), series:-lowerParameters),
         series:-lowerWeights);
+end proc;
+
+# Preserve exact rational parameters when possible.  This companion to
+# NumericSeries is used only for algebraic singular-divisor extraction; the
+# numerical Macaulay reduction continues to use guarded floating arithmetic.
+ExactParameterSeries := proc(series, epsilon)
+    local parameterValue;
+    parameterValue := p -> p:-constant + p:-slope * epsilon;
+    return MakeNumericHornRecord(series:-name, series:-nvariables,
+        map(parameterValue, series:-upperParameters), series:-upperWeights,
+        map(parameterValue, series:-lowerParameters), series:-lowerWeights);
 end proc;
 
 # ---------------------------------------------------------------------------
@@ -792,11 +1078,12 @@ ExtractConnectionMatrices := proc(
     return matrices;
 end proc;
 
-DerivePfaffian := proc(numericSeries, digits::posint, maximumSeed)
+DerivePfaffian := proc(numericSeries, digits::posint, maximumSeed,
+                       exactSeries := NULL)
     local base, baseEquations, orders, maximumBasisOrder, initialSeed,
-          finalSeed, point, seed, equations, columns, matrix, reduction,
-          basis, zero, matrices, pivotSubmatrix, rowReduction,
-          selectedRows, i, j;
+           finalSeed, point, seed, equations, columns, matrix, reduction,
+           basis, zero, matrices, pivotSubmatrix, rowReduction,
+           selectedRows, exactBase, exactEquations, i, j;
     base := BasePDEs(numericSeries);
     baseEquations := base[1]; orders := base[2];
     maximumBasisOrder := add(max(orders[i] - 1, 0), i = 1 .. nops(orders));
@@ -844,9 +1131,15 @@ DerivePfaffian := proc(numericSeries, digits::posint, maximumSeed)
         rowReduction := RREF(LinearAlgebra:-Transpose(pivotSubmatrix), digits);
         selectedRows := rowReduction:-pivotColumns;
         if nops(selectedRows) <> nops(reduction:-pivotColumns) then next; end if;
+        if exactSeries = NULL then
+            exactEquations := [];
+        else
+            exactBase := BasePDEs(exactSeries);
+            exactEquations := DifferentialClosure(exactBase[1], seed);
+        end if;
         return MakePfaffianRecord(numericSeries, basis, equations, columns,
             reduction:-pivotColumns, reduction:-freeColumns, selectedRows,
-            orders, digits);
+            orders, digits, exactSeries, exactEquations, seed);
     end do;
     error "the finite derivative basis did not close through seed order %1; increase maximumSeed or use non-resonant parameters", finalSeed;
 end proc;
@@ -859,7 +1152,8 @@ FindPfaffianSystem := proc(
     if digits < 1 then error "digits must be positive"; end if;
     oldDigits := Digits; Digits := digits + 14;
     try
-        result := DerivePfaffian(NumericSeries(series, epsilon), digits + 10, maximumSeed);
+        result := DerivePfaffian(NumericSeries(series, epsilon), digits + 10,
+            maximumSeed, ExactParameterSeries(series, epsilon));
     finally
         Digits := oldDigits;
     end try;
@@ -880,6 +1174,30 @@ FindHolonomicRank := proc(
     return [nops(system:-basis), system:-basis];
 end proc;
 
+UserConnectionMatricesInternal := proc(system, point::list)
+    local rank, result, matrixValue, evaluatedMatrix, variable,
+          row, column, entryValue, i;
+    if nops(point) <> nops(system:-variables) then
+        error "the point has the wrong length";
+    end if;
+    rank := system:-rank; result := [];
+    for matrixValue in system:-connection do
+        evaluatedMatrix := Matrix(rank,rank,datatype=anything);
+        for row to rank do
+            for column to rank do
+                entryValue := evalf(subs(seq(system:-variables[i]=point[i],
+                    i=1..nops(point)),matrixValue[row,column]));
+                if not IsFiniteNumber(entryValue) then
+                    error "the user Pfaffian connection is singular at the requested point";
+                end if;
+                evaluatedMatrix[row,column] := entryValue;
+            end do;
+        end do;
+        result := [op(result),evaluatedMatrix];
+    end do;
+    return result;
+end proc;
+
 ConnectionMatricesInternal := proc(system, point::list)
     local selectedEquations, selectedColumns, derivatives, matrix,
           pivotCount, freeCount, pivotMatrix, freeMatrix, reduction,
@@ -887,6 +1205,9 @@ ConnectionMatricesInternal := proc(system, point::list)
           basisPositions, basisSet, threshold, rank, n, matrices,
           variable, basisRow, derivative, target, targetColumn,
           position, basisColumn, reductionRow, freeColumn, i, j;
+    if system:-hpType = "UserPfaffianSystem" then
+        return UserConnectionMatricesInternal(system,point);
+    end if;
     selectedEquations := [seq(system:-equations[system:-equationRows[i]],
         i = 1 .. nops(system:-equationRows))];
     selectedColumns := [op(system:-pivotColumns), op(system:-freeColumns)];
@@ -964,7 +1285,7 @@ end proc;
 
 ConnectionMatrices := proc(system, point::list)
     local oldDigits, numericPoint, result;
-    if nops(point) <> system:-series:-nvariables then
+    if nops(point) <> SystemNVariables(system) then
         error "the point has the wrong length";
     end if;
     oldDigits := Digits; Digits := system:-digits + 14;
@@ -983,7 +1304,7 @@ CheckIntegrability := proc(system, {point := []})
           derivativeIJ, residual, tolerance, result, k;
     oldDigits := Digits; Digits := system:-digits + 14;
     try
-        n := system:-series:-nvariables;
+        n := SystemNVariables(system);
         x := `if`(nops(point) = 0, GenericPoint(n), map(evalf, point));
         if nops(x) <> n then error "the point has the wrong length"; end if;
         h := evalf(10^(-min(8, max(3, iquo(system:-digits, 4)))));
@@ -1010,6 +1331,400 @@ CheckIntegrability := proc(system, {point := []})
         Digits := oldDigits;
     end try;
     return result;
+end proc;
+
+ChooseBasepoint := proc(
+    system,
+    {digits := 0, radius := 0.12, maximumAttempts := 12,
+     maximumDegree := 220}
+)
+    local effectiveDigits, oldDigits, attempt, scale, candidate,
+          connectionValue, initialValue, n, i;
+    if radius <= 0 then error "radius must be positive"; end if;
+    effectiveDigits := `if`(digits = 0, system:-digits, digits);
+    n := SystemNVariables(system);
+    oldDigits := Digits; Digits := effectiveDigits + 14;
+    try
+        for attempt to maximumAttempts do
+            scale := evalf(radius * (0.55 + 0.4*attempt/maximumAttempts));
+            candidate := [seq(evalf(scale*(i+1)/(n+2) +
+                I*scale*(attempt+i)/(17*maximumAttempts)), i = 1 .. n)];
+            try
+                connectionValue := ConnectionMatricesInternal(system,candidate);
+                if system:-hpType = "UserPfaffianSystem" then
+                    return candidate;
+                end if;
+                initialValue := SeriesVector(system:-series,candidate,
+                    system:-basis,effectiveDigits,maximumDegree);
+                if initialValue[2] then return candidate; end if;
+            catch:
+                # Try the next deterministic regular candidate.
+            end try;
+        end do;
+    finally
+        Digits := oldDigits;
+    end try;
+    error "a regular convergent basepoint was not found; supply one explicitly";
+end proc;
+
+InitialVector := proc(
+    system,
+    basepoint::list,
+    {digits := 0, maximumDegree := 260}
+)
+    local effectiveDigits, oldDigits, result;
+    if system:-hpType = "UserPfaffianSystem" then
+        error "a user Pfaffian system has no distinguished initial vector; supply one explicitly";
+    end if;
+    if nops(basepoint) <> SystemNVariables(system) then
+        error "the basepoint has the wrong length";
+    end if;
+    effectiveDigits := `if`(digits = 0, system:-digits, digits);
+    oldDigits := Digits; Digits := effectiveDigits + 14;
+    try
+        result := SeriesVector(system:-series,map(evalf,basepoint),
+            system:-basis,effectiveDigits,maximumDegree);
+        if not result[2] then
+            error "the defining series did not converge at the selected basepoint";
+        end if;
+    finally
+        Digits := oldDigits;
+    end try;
+    return result[1];
+end proc;
+
+# ---------------------------------------------------------------------------
+# Singular divisor and path planning for the full multivariate connection
+# ---------------------------------------------------------------------------
+
+PolyExpression := proc(polynomial::table, variables::list)
+    local result, exponent, coefficientValue, i;
+    result := 0;
+    for exponent in [indices(polynomial, 'nolist')] do
+        coefficientValue := polynomial[exponent];
+        for i to nops(exponent) do
+            coefficientValue := coefficientValue * variables[i]^exponent[i];
+        end do;
+        result := result + coefficientValue;
+    end do;
+    return expand(result);
+end proc;
+
+PivotPolynomialMatrix := proc(system, variables::list)
+    local sourceEquations, selectedEquations, selectedColumns,
+          pivotCount, result, row, column, derivative;
+    if nops(variables) <> system:-series:-nvariables then
+        error "the variable-name list has the wrong length";
+    end if;
+    if nops(system:-exactEquations) > 0 then
+        sourceEquations := system:-exactEquations;
+    else
+        sourceEquations := system:-equations;
+    end if;
+    selectedEquations := [seq(sourceEquations[system:-equationRows[row]],
+        row = 1 .. nops(system:-equationRows))];
+    selectedColumns := system:-pivotColumns;
+    pivotCount := nops(selectedColumns);
+    result := Matrix(pivotCount, pivotCount, datatype = anything);
+    for row to pivotCount do
+        for column to pivotCount do
+            derivative := system:-columns[selectedColumns[column]];
+            if assigned(selectedEquations[row][derivative]) then
+                result[row, column] :=
+                    PolyExpression(selectedEquations[row][derivative], variables);
+            else
+                result[row, column] := 0;
+            end if;
+        end do;
+    end do;
+    return result;
+end proc;
+
+PivotDeterminantExpression := proc(system, variables::list)
+    return factor(expand(LinearAlgebra:-Determinant(
+        PivotPolynomialMatrix(system, variables))));
+end proc;
+
+SingularFactors := proc(system, {variableNames := []})
+    local variables, determinantExpression, factorData,
+          factorList, multiplicities, entry, matrixValue, row, column,
+          originalVariables, i;
+    option remember;
+    if nops(variableNames) = 0 then
+        if system:-hpType = "UserPfaffianSystem" then
+            variables := system:-variables;
+        else
+            variables := [seq(parse(cat("hp_x", i)),
+                i = 1 .. SystemNVariables(system))];
+        end if;
+    else
+        variables := variableNames;
+    end if;
+    if nops(variables) <> SystemNVariables(system) then
+        error "variableNames has the wrong length";
+    end if;
+    if system:-hpType = "UserPfaffianSystem" then
+        originalVariables := system:-variables;
+        determinantExpression := 1;
+        for matrixValue in system:-connection do
+            for row to system:-rank do
+                for column to system:-rank do
+                    determinantExpression := determinantExpression *
+                        denom(normal(matrixValue[row,column]));
+                end do;
+            end do;
+        end do;
+        for entry in system:-declaredSingularFactors do
+            determinantExpression := determinantExpression * entry;
+        end do;
+        if variables <> originalVariables then
+            determinantExpression := subs(seq(originalVariables[i]=variables[i],
+                i=1..nops(variables)),determinantExpression);
+        end if;
+        determinantExpression := factor(expand(determinantExpression));
+    else
+        determinantExpression := PivotDeterminantExpression(system, variables);
+    end if;
+    factorList := []; multiplicities := [];
+    try
+        factorData := factors(determinantExpression);
+        if type(factorData, list) and nops(factorData) = 2 and
+           type(factorData[2], list) then
+            for entry in factorData[2] do
+                factorList := [op(factorList), entry[1]];
+                multiplicities := [op(multiplicities), entry[2]];
+            end do;
+        end if;
+    catch:
+        factorList := [];
+    end try;
+    if nops(factorList) = 0 and determinantExpression <> 1 then
+        factorList := [determinantExpression];
+        multiplicities := [1];
+    end if;
+    return MakeSingularRecord(variables, determinantExpression,
+        factorList, multiplicities);
+end proc;
+
+RestrictedSingularRoots := proc(
+    system,
+    segmentStart::list,
+    segmentEnd::list,
+    {digits := 0}
+)
+    local effectiveDigits, oldDigits, divisor, tau, direction,
+          restricted, numeratorExpression, rawRoots, roots,
+          rootValue, duplicate, existing, i;
+    if nops(segmentStart) <> SystemNVariables(system) or
+       nops(segmentEnd) <> SystemNVariables(system) then
+        error "a segment endpoint has the wrong length";
+    end if;
+    effectiveDigits := `if`(digits = 0, system:-digits, digits);
+    oldDigits := Digits; Digits := effectiveDigits + 14;
+    try
+        divisor := SingularFactors(system);
+        tau := parse("hp_tau");
+        direction := [seq(segmentEnd[i] - segmentStart[i],
+            i = 1 .. nops(segmentStart))];
+        restricted := expand(subs(seq(divisor:-variables[i] =
+            segmentStart[i] + tau * direction[i],
+            i = 1 .. nops(direction)), divisor:-determinant));
+        numeratorExpression := numer(normal(restricted));
+        if evalb(numeratorExpression = 0) then
+            error "the entire segment is contained in the selected singular divisor";
+        elif not has(numeratorExpression, tau) then
+            return [];
+        end if;
+        rawRoots := [fsolve(numeratorExpression = 0, tau, complex)];
+        roots := [];
+        for rootValue in rawRoots do
+            rootValue := evalf(rootValue);
+            if not IsFiniteNumber(rootValue) then next; end if;
+            duplicate := false;
+            for existing in roots do
+                if abs(rootValue - existing) < 10^(-max(8, iquo(effectiveDigits, 2))) then
+                    duplicate := true; break;
+                end if;
+            end do;
+            if not duplicate then roots := [op(roots), rootValue]; end if;
+        end do;
+    finally
+        Digits := oldDigits;
+    end try;
+    return roots;
+end proc;
+
+DistanceToUnitInterval := proc(rootValue)
+    local realPart, imaginaryPart;
+    realPart := Re(rootValue); imaginaryPart := Im(rootValue);
+    if realPart < 0 then
+        return abs(rootValue);
+    elif realPart > 1 then
+        return abs(rootValue - 1);
+    end if;
+    return abs(imaginaryPart);
+end proc;
+
+SegmentSafety := proc(system, segmentStart::list, segmentEnd::list,
+                      digits::posint, clearance)
+    local roots, minimumDistance, rootValue;
+    roots := RestrictedSingularRoots(system, segmentStart, segmentEnd,
+        'digits' = digits);
+    minimumDistance := infinity;
+    for rootValue in roots do
+        minimumDistance := min(minimumDistance,
+            DistanceToUnitInterval(rootValue));
+    end do;
+    return [evalb(minimumDistance > clearance), minimumDistance, roots];
+end proc;
+
+HomotopyShortcutSampled := proc(system, leftPoint::list, middlePoint::list,
+                             rightPoint::list, digits::posint,
+                             samples::posint, clearance)
+    local divisor, s, u, oldPoint, newPoint, point, determinantValue,
+          scale, segmentCheck, i, j, k;
+    segmentCheck := SegmentSafety(system, leftPoint, rightPoint,
+        digits, clearance);
+    if not segmentCheck[1] then return false; end if;
+    divisor := SingularFactors(system);
+    scale := 1;
+    for j from 0 to samples do
+        s := evalf(j / samples);
+        if s <= 1/2 then
+            oldPoint := [seq(leftPoint[i] + 2*s*(middlePoint[i]-leftPoint[i]),
+                i = 1 .. nops(leftPoint))];
+        else
+            oldPoint := [seq(middlePoint[i] + 2*(s-1/2)*(rightPoint[i]-middlePoint[i]),
+                i = 1 .. nops(leftPoint))];
+        end if;
+        newPoint := [seq(leftPoint[i] + s*(rightPoint[i]-leftPoint[i]),
+            i = 1 .. nops(leftPoint))];
+        for k from 0 to samples do
+            u := evalf(k / samples);
+            point := [seq((1-u)*oldPoint[i] + u*newPoint[i],
+                i = 1 .. nops(leftPoint))];
+            determinantValue := evalf(subs(seq(divisor:-variables[i] = point[i],
+                i = 1 .. nops(point)), divisor:-determinant));
+            scale := max(scale, abs(determinantValue));
+            if abs(determinantValue) <= clearance * scale then return false; end if;
+        end do;
+    end do;
+    return true;
+end proc;
+
+MakeCanonicalPath := proc(system, startPoint::list, targetPoint::list,
+                          digits::posint, branchSide::integer, clearance)
+    local directCheck, side, amplitude, midpoint, candidate,
+          firstCheck, secondCheck, coordinate, i;
+    directCheck := SegmentSafety(system, startPoint, targetPoint,
+        digits, clearance);
+    if directCheck[1] then return [startPoint, targetPoint]; end if;
+    if branchSide = 0 then
+        error "a singular direct segment requires branchSide=-1 or branchSide=1";
+    end if;
+    side := branchSide;
+    amplitude := max(0.15, add(abs(targetPoint[i]-startPoint[i]),
+        i = 1 .. nops(startPoint)) / max(1, nops(startPoint)));
+    for coordinate to nops(startPoint) do
+        midpoint := [seq((startPoint[i] + targetPoint[i])/2,
+            i = 1 .. nops(startPoint))];
+        midpoint[coordinate] := midpoint[coordinate] +
+            side * I * amplitude;
+        candidate := [startPoint, midpoint, targetPoint];
+        firstCheck := SegmentSafety(system, candidate[1], candidate[2],
+            digits, clearance);
+        secondCheck := SegmentSafety(system, candidate[2], candidate[3],
+            digits, clearance);
+        if firstCheck[1] and secondCheck[1] then return candidate; end if;
+    end do;
+    error "a canonical detour on the requested branchSide avoiding the detected singular divisor was not found";
+end proc;
+
+ReversePath := proc(pathOrPlan)
+    local points, result, i;
+    if type(pathOrPlan, record) and
+       evalb(pathOrPlan:-hpType = "PfaffianPathPlan") then
+        points := pathOrPlan:-points;
+    else
+        points := pathOrPlan;
+    end if;
+    result := [];
+    for i from nops(points) by -1 to 1 do
+        result := [op(result), points[i]];
+    end do;
+    return result;
+end proc;
+
+PlanPath := proc(
+    system,
+    startPoint::list,
+    targetPoint::list,
+    {pathClass := "principal", mode := "safe_opt", waypoints := [],
+     branchSide := -1, digits := 0, homotopySamples := 10,
+     clearance := 1.e-10}
+)
+    local effectiveDigits, path, point, candidate, removed,
+          changed, i, beforeCount, checks, segmentIndex,
+          checkValue, diagnostics;
+    if not member(mode, ["canonical", "user", "safe_opt", "fast_opt"]) then
+        error "planner mode must be canonical, user, safe_opt, or fast_opt";
+    end if;
+    if not member(branchSide, [-1, 0, 1]) then
+        error "branchSide must be -1, 0, or 1";
+    end if;
+    if nops(startPoint) <> SystemNVariables(system) or
+       nops(targetPoint) <> SystemNVariables(system) then
+        error "a path endpoint has the wrong length";
+    end if;
+    effectiveDigits := `if`(digits = 0, system:-digits, digits);
+    if nops(waypoints) = 0 then
+        if mode = "user" then
+            path := [map(evalf,startPoint),map(evalf,targetPoint)];
+        else
+            path := MakeCanonicalPath(system, map(evalf, startPoint),
+                map(evalf, targetPoint), effectiveDigits, branchSide, clearance);
+        end if;
+    else
+        path := [map(evalf, startPoint)];
+        for point in waypoints do
+            if nops(point) <> nops(startPoint) then
+                error "a path waypoint has the wrong length";
+            end if;
+            path := [op(path), map(evalf, point)];
+        end do;
+        path := [op(path), map(evalf, targetPoint)];
+    end if;
+    beforeCount := nops(path) - 1; removed := 0;
+    if mode = "fast_opt" and nops(path) > 2 then
+        changed := true;
+        while changed do
+            changed := false;
+            for i from 2 to nops(path) - 1 do
+                if HomotopyShortcutSampled(system, path[i-1], path[i], path[i+1],
+                    effectiveDigits, homotopySamples, clearance) then
+                    candidate := [op(path[1 .. i-1]), op(path[i+1 .. -1])];
+                    path := candidate; removed := removed + 1;
+                    changed := true; break;
+                end if;
+            end do;
+        end do;
+    end if;
+    checks := [];
+    for segmentIndex to nops(path)-1 do
+        checkValue := SegmentSafety(system, path[segmentIndex],
+            path[segmentIndex+1], effectiveDigits, clearance);
+        if not checkValue[1] then
+            error "planned segment %1 intersects or approaches the detected singular divisor", segmentIndex;
+        end if;
+        checks := [op(checks), MakeSegmentCheckRecord(segmentIndex,
+            checkValue[2], checkValue[3])];
+    end do;
+    diagnostics := MakePlanDiagnosticsRecord(beforeCount, nops(path)-1,
+        removed, checks, `if`(mode = "safe_opt",
+        "not_certified_no_change", `if`(mode = "fast_opt",
+        "sampled_unverified", "not-requested")));
+    return MakePathPlanRecord(path[1], path[-1], path, mode,
+        convert(pathClass, string), diagnostics);
 end proc;
 
 # ---------------------------------------------------------------------------
@@ -1051,8 +1766,20 @@ SeriesCoefficient := proc(series, index::list)
 end proc;
 
 IsFiniteNumber := proc(value)
-    if not type(value, numeric) then return false; end if;
-    if has(value, {undefined, infinity, -infinity}) then return false; end if;
+    local realPart, imaginaryPart;
+    if not type(value,numeric) and
+       not type(value,complex(numeric)) then return false; end if;
+    if has(value,{undefined,infinity,-infinity}) then return false; end if;
+    try
+        realPart := evalf(Re(value));
+        imaginaryPart := evalf(Im(value));
+    catch:
+        return false;
+    end try;
+    if not type(realPart,numeric) or not type(imaginaryPart,numeric) or
+       has({realPart,imaginaryPart},{undefined,infinity,-infinity}) then
+        return false;
+    end if;
     return true;
 end proc;
 
@@ -1284,11 +2011,49 @@ ReductionSeries := proc(system, center::list, direction::list, order::nonnegint)
     return reductions;
 end proc;
 
+UserRestrictedMatrixSeries := proc(
+    system,
+    center::list,
+    direction::list,
+    order::nonnegint
+)
+    local z, rank, coefficients, variable, row, column,
+          restrictedEntry, expansionValue, degree, i;
+    z := parse("hp_local_z"); rank := system:-rank;
+    coefficients := [seq(Matrix(rank,rank,datatype=anything),
+        degree=0..order)];
+    for variable to nops(system:-variables) do
+        if direction[variable] = 0 then next; end if;
+        for row to rank do
+            for column to rank do
+                restrictedEntry := subs(seq(system:-variables[i]=
+                    center[i]+z*direction[i],i=1..nops(center)),
+                    system:-connection[variable][row,column]);
+                try
+                    expansionValue := convert(series(restrictedEntry,z=0,
+                        order+1),polynom);
+                catch:
+                    error "a Taylor centre lies on the singular locus of the user Pfaffian connection";
+                end try;
+                for degree from 0 to order do
+                    coefficients[degree+1][row,column] :=
+                        coefficients[degree+1][row,column] +
+                        direction[variable]*evalf(coeff(expansionValue,z,degree));
+                end do;
+            end do;
+        end do;
+    end do;
+    return coefficients;
+end proc;
+
 RestrictedMatrixSeries := proc(system, center::list, direction::list, order::nonnegint)
     local reductions, freePosition, pivotPosition, columnIndex,
           basisColumns, basisPositions, basisSet, rank, coefficients,
           n, variable, basisRow, derivative, target, targetColumn,
           position, basisColumn, reductionRow, degree, i;
+    if system:-hpType = "UserPfaffianSystem" then
+        return UserRestrictedMatrixSeries(system,center,direction,order);
+    end if;
     reductions := ReductionSeries(system, center, direction, order);
     freePosition := table();
     for i to nops(system:-freeColumns) do freePosition[system:-freeColumns[i]] := i; end do;
@@ -1357,7 +2122,8 @@ end proc;
 
 EvaluateFrobeniusSeries := proc(coefficients::list, step, digits::posint)
     local result, termNorms, power, degree, term, scale,
-          tailLength, tailStart, tail, tolerance, decreasing, i;
+          tailLength, tailStart, tail, tolerance, decreasing,
+          previousNonzero, monotonicSlack, i;
     result := Vector(LinearAlgebra:-Dimension(coefficients[1]), datatype = anything);
     termNorms := []; power := 1;
     for degree from 0 to nops(coefficients) - 1 do
@@ -1371,7 +2137,17 @@ EvaluateFrobeniusSeries := proc(coefficients::list, step, digits::posint)
     tailStart := nops(termNorms) - tailLength + 1;
     tail := max(seq(termNorms[i], i = tailStart .. nops(termNorms)));
     tolerance := evalf(10^(-(digits + 5)));
-    decreasing := evalb(tailLength < 2 or termNorms[-1] <= termNorms[tailStart]);
+    decreasing := true; previousNonzero := infinity;
+    monotonicSlack := evalf(1+10^(-max(4,iquo(digits,2))));
+    for i from tailStart to nops(termNorms) do
+        if termNorms[i] > 0 then
+            if previousNonzero <> infinity and
+               termNorms[i] > monotonicSlack*previousNonzero then
+                decreasing := false; break;
+            end if;
+            previousNonzero := termNorms[i];
+        end if;
+    end do;
     return [result, evalf(tail / scale), evalb(tail <= tolerance * scale and decreasing)];
 end proc;
 
@@ -1415,6 +2191,926 @@ IntegrateSegmentFrobenius := proc(
         end if;
     end do;
     return value;
+end proc;
+
+# ---------------------------------------------------------------------------
+# Full fundamental-matrix Taylor transport
+# ---------------------------------------------------------------------------
+
+FundamentalSolutionCoefficients := proc(
+    matrixCoefficients::list,
+    rank::posint,
+    order::posint
+)
+    local coefficients, degree, nextMatrix, matrixDegree;
+    coefficients := [LinearAlgebra:-IdentityMatrix(rank,
+        datatype = anything)];
+    for degree from 0 to order - 1 do
+        nextMatrix := Matrix(rank, rank, datatype = anything);
+        for matrixDegree from 0 to degree do
+            nextMatrix := nextMatrix +
+                matrixCoefficients[matrixDegree + 1].
+                coefficients[degree - matrixDegree + 1];
+        end do;
+        coefficients := [op(coefficients),
+            evalf(nextMatrix / (degree + 1))];
+    end do;
+    return coefficients;
+end proc;
+
+EvaluateFundamentalSeries := proc(
+    coefficients::list,
+    step,
+    digits::posint
+)
+    local rank, result, termNorms, power, degree, term, scale,
+          tailLength, tailStart, tail, tolerance, decreasing,
+          previousNonzero, monotonicSlack, i;
+    rank := LinearAlgebra:-RowDimension(coefficients[1]);
+    result := Matrix(rank, rank, datatype = anything);
+    termNorms := []; power := 1;
+    for degree from 0 to nops(coefficients) - 1 do
+        term := evalf(power * coefficients[degree + 1]);
+        result := result + term;
+        termNorms := [op(termNorms), MatrixMaxAbs(term)];
+        power := power * step;
+    end do;
+    scale := max(MatrixMaxAbs(result), 1);
+    tailLength := min(8, nops(termNorms));
+    tailStart := nops(termNorms) - tailLength + 1;
+    tail := max(seq(termNorms[i], i = tailStart .. nops(termNorms)));
+    tolerance := evalf(10^(-(digits + 4)));
+    decreasing := true; previousNonzero := infinity;
+    monotonicSlack := evalf(1+10^(-max(4,iquo(digits,2))));
+    for i from tailStart to nops(termNorms) do
+        if termNorms[i] > 0 then
+            if previousNonzero <> infinity and
+               termNorms[i] > monotonicSlack*previousNonzero then
+                decreasing := false; break;
+            end if;
+            previousNonzero := termNorms[i];
+        end if;
+    end do;
+    return [result, evalf(tail / scale),
+        evalb(tail <= tolerance * scale and decreasing)];
+end proc;
+
+FundamentalDifferentialResidual := proc(
+    system,
+    center::list,
+    direction::list,
+    coefficients::list,
+    step,
+    transportedMatrix::Matrix
+)
+    local rank, derivativeValue, power, degree, endpoint,
+          omega, restrictedMatrix, scale, variable, i;
+    rank := LinearAlgebra:-RowDimension(transportedMatrix);
+    derivativeValue := Matrix(rank,rank,datatype=anything);
+    power := 1;
+    for degree from 1 to nops(coefficients)-1 do
+        derivativeValue := derivativeValue +
+            degree*power*coefficients[degree+1];
+        power := power*step;
+    end do;
+    endpoint := [seq(evalf(center[i]+step*direction[i]),
+        i=1..nops(center))];
+    omega := ConnectionMatricesInternal(system,endpoint);
+    restrictedMatrix := Matrix(rank,rank,datatype=anything);
+    for variable to nops(direction) do
+        restrictedMatrix := restrictedMatrix + direction[variable]*omega[variable];
+    end do;
+    scale := max(1,MatrixMaxAbs(derivativeValue),
+        MatrixMaxAbs(restrictedMatrix.transportedMatrix));
+    return evalf(MatrixMaxAbs(derivativeValue-
+        restrictedMatrix.transportedMatrix)/scale);
+end proc;
+
+MatrixIdentityResidual := proc(inputMatrix::Matrix)
+    local rows, columns;
+    rows := LinearAlgebra:-RowDimension(inputMatrix);
+    columns := LinearAlgebra:-ColumnDimension(inputMatrix);
+    if rows <> columns then error "an identity residual requires a square matrix"; end if;
+    return MatrixMaxAbs(inputMatrix -
+        LinearAlgebra:-IdentityMatrix(rows, datatype = anything));
+end proc;
+
+IntegrateSegmentFundamental := proc(
+    system,
+    segmentStart::list,
+    segmentEnd::list,
+    digits::posint,
+    seriesOrder::posint,
+    maximumSteps::posint,
+    safetyFactor,
+    verificationOrder::nonnegint,
+    verbose::boolean
+)
+    local direction, rank, roots, parameter, patches, minimumStep,
+          factors, history, maximumError, maximumDifferentialResidual,
+          center, nearestRoot,
+          rootValue, permittedStep, matrixCoefficients,
+          solutionCoefficients, step, accepted, highEvaluation,
+          lowEvaluation, candidate, discrepancy, relativeTail,
+          differentialResidual, differentialTolerance,
+          totalOrder, scale, i;
+    direction := [seq(evalf(segmentEnd[i] - segmentStart[i]),
+        i = 1 .. nops(segmentStart))];
+    rank := SystemRank(system);
+    if max(seq(abs(direction[i]), i = 1 .. nops(direction))) = 0 then
+        return [[LinearAlgebra:-IdentityMatrix(rank, datatype = anything)],
+            [MakePatchHistoryRecord(0, 0., 1., 1., seriesOrder,
+                Digits, 0., 0., infinity, segmentStart, 0.)], 0., 0.];
+    end if;
+    if not evalb(safetyFactor > 0 and safetyFactor < 1) then
+        error "safetyFactor must lie strictly between 0 and 1";
+    end if;
+    roots := RestrictedSingularRoots(system, segmentStart, segmentEnd,
+        'digits' = digits);
+    parameter := 0.; patches := 0; factors := []; history := [];
+    maximumError := 0.; maximumDifferentialResidual := 0.;
+    minimumStep := evalf(10^(-max(20, digits + 8)));
+    differentialTolerance := evalf(10^(-max(6,digits-3)));
+    totalOrder := seriesOrder + verificationOrder;
+    while parameter < 1 do
+        patches := patches + 1;
+        if patches > maximumSteps then
+            error "the fundamental Taylor solver exceeded maximumSteps";
+        end if;
+        center := [seq(evalf(segmentStart[i] + parameter * direction[i]),
+            i = 1 .. nops(direction))];
+        nearestRoot := infinity;
+        for rootValue in roots do
+            nearestRoot := min(nearestRoot, abs(parameter - rootValue));
+        end do;
+        if nearestRoot <> infinity and nearestRoot <= minimumStep then
+            error "a Taylor centre is on or too near a restricted singularity";
+        end if;
+        permittedStep := `if`(nearestRoot = infinity, 1-parameter,
+            safetyFactor * nearestRoot);
+        step := min(evalf(1 - parameter), evalf(permittedStep));
+        matrixCoefficients := RestrictedMatrixSeries(system, center,
+            direction, totalOrder - 1);
+        solutionCoefficients := FundamentalSolutionCoefficients(
+            matrixCoefficients, rank, totalOrder);
+        accepted := false; candidate :=
+            LinearAlgebra:-IdentityMatrix(rank, datatype = anything);
+        discrepancy := infinity; relativeTail := infinity;
+        differentialResidual := infinity;
+        while step >= minimumStep do
+            highEvaluation := EvaluateFundamentalSeries(
+                solutionCoefficients, step, digits);
+            lowEvaluation := EvaluateFundamentalSeries(
+                solutionCoefficients[1 .. seriesOrder + 1], step,
+                max(1, digits - 2));
+            candidate := highEvaluation[1];
+            scale := max(MatrixMaxAbs(candidate), 1);
+            discrepancy := evalf(MatrixMaxAbs(
+                candidate - lowEvaluation[1]) / scale);
+            relativeTail := highEvaluation[2];
+            differentialResidual := FundamentalDifferentialResidual(
+                system,center,direction,solutionCoefficients,step,candidate);
+            accepted := evalb(highEvaluation[3] and
+                discrepancy <= 10^(-max(6, digits - 2)) and
+                differentialResidual <= differentialTolerance);
+            if accepted then break; end if;
+            step := step / 2;
+        end do;
+        if not accepted then
+            error "the fundamental Taylor series did not converge along the selected contour";
+        end if;
+        factors := [op(factors), candidate];
+        history := [op(history), MakePatchHistoryRecord(0, parameter,
+            evalf(parameter + step), step, totalOrder, Digits,
+            relativeTail, discrepancy, nearestRoot, center,
+            differentialResidual)];
+        maximumError := max(maximumError, relativeTail, discrepancy);
+        maximumDifferentialResidual := max(maximumDifferentialResidual,
+            differentialResidual);
+        parameter := evalf(parameter + step);
+        if abs(1 - parameter) <= 10 * minimumStep then parameter := 1; end if;
+        if verbose then
+            printf("HyperPrecision: fundamental patch %d, step = %a, root radius = %a, error = %a\n",
+                patches, step, nearestRoot,
+                max(relativeTail,discrepancy,differentialResidual));
+        end if;
+    end do;
+    return [factors, history, maximumError, maximumDifferentialResidual];
+end proc;
+
+ApplyFactorList := proc(factors::list, initialObject)
+    local result, factorMatrix;
+    result := copy(initialObject);
+    for factorMatrix in factors do result := factorMatrix.result; end do;
+    return result;
+end proc;
+
+MaterializeFactorList := proc(factors::list)
+    local rank, result, factorMatrix;
+    if nops(factors) = 0 then
+        error "an empty factor list has no inferable rank";
+    end if;
+    rank := LinearAlgebra:-RowDimension(factors[1]);
+    result := LinearAlgebra:-IdentityMatrix(rank, datatype = anything);
+    for factorMatrix in factors do result := factorMatrix.result; end do;
+    return result;
+end proc;
+
+InvertFactorList := proc(factors::list)
+    local result, identityMatrix, rank, i;
+    if nops(factors) = 0 then return []; end if;
+    rank := LinearAlgebra:-RowDimension(factors[1]);
+    identityMatrix := LinearAlgebra:-IdentityMatrix(rank,
+        datatype = anything);
+    result := [];
+    for i from nops(factors) by -1 to 1 do
+        result := [op(result), LinearAlgebra:-LinearSolve(
+            factors[i], identityMatrix)];
+    end do;
+    return result;
+end proc;
+
+InvertTransportHistory := proc(history::list,path::list)
+    local result, reversedPath, segmentCount, oldEntry, newSegment,
+          newStart, newEnd, newCenter, direction, coordinate, i;
+    if nops(history) = 0 then return []; end if;
+    if nops(path) < 2 then
+        error "an inverse transport history requires a nonempty path";
+    end if;
+    reversedPath := ReversePath(path);
+    segmentCount := nops(path)-1;
+    result := [];
+    for i from nops(history) by -1 to 1 do
+        oldEntry := history[i];
+        newSegment := segmentCount-oldEntry:-segment+1;
+        if newSegment < 1 or newSegment > segmentCount then
+            error "a transport history segment is inconsistent with its path";
+        end if;
+        newStart := evalf(1-oldEntry:-segmentParameterEnd);
+        newEnd := evalf(1-oldEntry:-segmentParameterStart);
+        direction := [seq(evalf(reversedPath[newSegment+1][coordinate]-
+            reversedPath[newSegment][coordinate]),
+            coordinate=1..nops(reversedPath[newSegment]))];
+        newCenter := [seq(evalf(reversedPath[newSegment][coordinate]+
+            newStart*direction[coordinate]),
+            coordinate=1..nops(direction))];
+        result := [op(result),MakePatchHistoryRecord(newSegment,newStart,
+            newEnd,oldEntry:-step,oldEntry:-order,
+            oldEntry:-workingDigits,oldEntry:-relativeTail,
+            oldEntry:-orderDiscrepancy,oldEntry:-restrictedRadius,
+            newCenter,oldEntry:-differentialResidual)];
+    end do;
+    return result;
+end proc;
+
+FactorizedFundamentalTransport := proc(
+    factors::list,
+    path::list,
+    {digits := 50, mode := "fast", diagnostics := NULL, history := []}
+)
+    local frozenFactors, frozenPath, frozenDiagnostics, frozenHistory,
+          frozenDigits, frozenMode,
+          applyProcedure, materializeProcedure, inverseProcedure;
+    if mode = "certified" then
+        error "certified complex-ball transport is not implemented in Maple; use mode=fast";
+    elif mode <> "fast" then
+        error "transport mode must be fast or certified";
+    end if;
+    if nops(factors) = 0 then error "factors must not be empty"; end if;
+    frozenFactors := map(copy, factors); frozenPath := path;
+    frozenDiagnostics := `if`(diagnostics = NULL,
+        MakeFactorDiagnosticsRecord(nops(factors)), diagnostics);
+    frozenHistory := history; frozenDigits := digits; frozenMode := mode;
+    applyProcedure := proc(p1)
+        return ApplyFactorList(frozenFactors, p1);
+    end proc;
+    materializeProcedure := proc()
+        return MaterializeFactorList(frozenFactors);
+    end proc;
+    inverseProcedure := proc()
+        return FactorizedFundamentalTransport(InvertFactorList(frozenFactors),
+            ReversePath(frozenPath),
+            parse("digits")=frozenDigits,parse("mode")=frozenMode,
+            parse("diagnostics")=
+                MakeInverseDiagnosticsRecord(nops(frozenFactors)),
+            parse("history")=
+                InvertTransportHistory(frozenHistory,frozenPath));
+    end proc;
+    return MakeFactorizedRecord(frozenFactors, frozenPath, digits, mode,
+        frozenDiagnostics, frozenHistory, applyProcedure,
+        materializeProcedure, inverseProcedure);
+end proc;
+
+ApplyTransport := proc(transport, initialObject)
+    if transport:-hpType <> "FactorizedFundamentalTransport" then
+        error "expected a FactorizedFundamentalTransport";
+    end if;
+    return ApplyFactorList(transport:-factors, initialObject);
+end proc;
+
+MaterializeTransport := proc(transport)
+    if transport:-hpType <> "FactorizedFundamentalTransport" then
+        error "expected a FactorizedFundamentalTransport";
+    end if;
+    return MaterializeFactorList(transport:-factors);
+end proc;
+
+InverseTransport := proc(transport)
+    if transport:-hpType <> "FactorizedFundamentalTransport" then
+        error "expected a FactorizedFundamentalTransport";
+    end if;
+    return FactorizedFundamentalTransport(InvertFactorList(transport:-factors),
+        ReversePath(transport:-path), 'digits' = transport:-digits,
+        'mode' = transport:-mode,
+        'diagnostics' = MakeInverseDiagnosticsRecord(nops(transport:-factors)),
+        'history' = InvertTransportHistory(transport:-history,
+            transport:-path));
+end proc;
+
+NormalisePathArgument := proc(system, pathOrPlan)
+    local points, point;
+    try
+        if pathOrPlan:-hpType = "PfaffianPathPlan" then
+            points := pathOrPlan:-points;
+        else
+            points := pathOrPlan;
+        end if;
+    catch:
+        points := pathOrPlan;
+    end try;
+    if not type(points, list) or nops(points) < 2 then
+        error "a transport path must contain at least two points";
+    end if;
+    for point in points do
+        if not type(point, list) or
+           nops(point) <> SystemNVariables(system) then
+            error "a transport path point has the wrong dimension";
+        end if;
+    end do;
+    return map(p -> map(evalf, p), points);
+end proc;
+
+TransportFundamentalOnce := proc(
+    system,
+    points::list,
+    digits::posint,
+    seriesOrder::posint,
+    maximumSteps::posint,
+    safetyFactor,
+    verificationOrder::nonnegint,
+    verbose::boolean
+)
+    local factors, history, maximumError, maximumDifferentialResidual,
+          segmentResult, segment,
+          historyEntry, segmentHistory;
+    factors := []; history := []; maximumError := 0.;
+    maximumDifferentialResidual := 0.;
+    for segment to nops(points)-1 do
+        segmentResult := IntegrateSegmentFundamental(system,
+            points[segment], points[segment+1], digits, seriesOrder,
+            maximumSteps, safetyFactor, verificationOrder, verbose);
+        factors := [op(factors), op(segmentResult[1])];
+        segmentHistory := [];
+        for historyEntry in segmentResult[2] do
+            segmentHistory := [op(segmentHistory), MakePatchHistoryRecord(
+                segment, historyEntry:-segmentParameterStart,
+                historyEntry:-segmentParameterEnd, historyEntry:-step,
+                historyEntry:-order, historyEntry:-workingDigits,
+                historyEntry:-relativeTail,
+                historyEntry:-orderDiscrepancy,
+                historyEntry:-restrictedRadius,
+                historyEntry:-center,
+                historyEntry:-differentialResidual)];
+        end do;
+        history := [op(history), op(segmentHistory)];
+        maximumError := max(maximumError, segmentResult[3]);
+        maximumDifferentialResidual := max(maximumDifferentialResidual,
+            segmentResult[4]);
+    end do;
+    return [factors, history, maximumError,maximumDifferentialResidual];
+end proc;
+
+TransportFundamental := proc(
+    system,
+    pathOrPlan,
+    {digits := 0, mode := "fast", taylorOrder := 0,
+     verificationOrder := 8, maximumSteps := 20000,
+     safetyFactor := 0.62, verifyReverse := true,
+     maximumPrecisionEscalations := 2, precisionStep := 16,
+     verbose := false}
+)
+    local effectiveDigits, effectiveOrder, points, oldDigits,
+          escalation, forwardResult, reverseResult, forwardMatrix,
+          reverseMatrix, reverseError, tolerance, diagnostics,
+          precisionHistory, result;
+    if mode = "certified" then
+        error "certified complex-ball transport is not implemented in Maple; use mode=fast";
+    elif mode <> "fast" then
+        error "transport mode must be fast or certified";
+    end if;
+    points := NormalisePathArgument(system, pathOrPlan);
+    effectiveDigits := `if`(digits = 0, system:-digits, digits);
+    effectiveOrder := `if`(taylorOrder = 0,
+        max(36, ceil(3.1 * (effectiveDigits + 5))), taylorOrder);
+    if effectiveOrder < 8 then error "taylorOrder must be at least 8"; end if;
+    precisionHistory := [];
+    oldDigits := Digits;
+    try
+        for escalation from 0 to maximumPrecisionEscalations do
+            Digits := max(system:-digits, effectiveDigits + 14);
+            forwardResult := TransportFundamentalOnce(system, points,
+                effectiveDigits, effectiveOrder, maximumSteps,
+                safetyFactor, verificationOrder, verbose);
+            reverseError := undefined;
+            if verifyReverse then
+                reverseResult := TransportFundamentalOnce(system,
+                    ReversePath(points), effectiveDigits, effectiveOrder,
+                    maximumSteps, safetyFactor, verificationOrder, verbose);
+                forwardMatrix := MaterializeFactorList(forwardResult[1]);
+                reverseMatrix := MaterializeFactorList(reverseResult[1]);
+                reverseError := MatrixIdentityResidual(
+                    reverseMatrix.forwardMatrix);
+                tolerance := evalf(10^(-max(8, effectiveDigits - 5)));
+            else
+                tolerance := infinity;
+            end if;
+            precisionHistory := [op(precisionHistory),
+                MakePrecisionAttemptRecord(escalation + 1,
+                effectiveDigits, effectiveOrder, forwardResult[3],
+                reverseError,forwardResult[4])];
+            if not verifyReverse or reverseError <= tolerance then break; end if;
+            effectiveDigits := effectiveDigits + precisionStep;
+            effectiveOrder := effectiveOrder + max(12, precisionStep);
+        end do;
+        if verifyReverse and reverseError > tolerance then
+            error "reverse-path consistency did not reach the requested tolerance; last residual was %1", reverseError;
+        end if;
+        diagnostics := MakeTransportDiagnosticsRecord(
+            nops(forwardResult[1]), forwardResult[3], verifyReverse,
+            reverseError, escalation, effectiveDigits, effectiveOrder,
+            precisionHistory,forwardResult[4]);
+        result := FactorizedFundamentalTransport(forwardResult[1], points,
+            'digits' = effectiveDigits, 'mode' = mode,
+            'diagnostics' = diagnostics, 'history' = forwardResult[2]);
+    finally
+        Digits := oldDigits;
+    end try;
+    return result;
+end proc;
+
+# ---------------------------------------------------------------------------
+# Meridian loops and numerical monodromy representations
+# ---------------------------------------------------------------------------
+
+UnivariateMeridianLoop := proc(
+    system,
+    basepoint::list,
+    singularity,
+    radius,
+    vertices::posint,
+    digits::posint,
+    planner::string
+)
+    local radialDirection, approach, connectionPlan, connector,
+          circle, reverseConnector, points, k;
+    if abs(basepoint[1] - singularity) <= radius then
+        error "the requested univariate meridian contains the basepoint";
+    end if;
+    radialDirection := (basepoint[1] - singularity) /
+        abs(basepoint[1] - singularity);
+    approach := [evalf(singularity + radius * radialDirection)];
+    connectionPlan := PlanPath(system, basepoint, approach,
+        'mode' = planner, 'digits' = digits, 'branchSide' = -1);
+    connector := connectionPlan:-points;
+    circle := [seq([evalf(singularity + radius * radialDirection *
+        exp(2*Pi*I*k/vertices))], k = 1 .. vertices)];
+    reverseConnector := ReversePath(connector);
+    points := [op(connector), op(circle)];
+    if nops(reverseConnector) > 1 then
+        points := [op(points), op(reverseConnector[2 .. -1])];
+    end if;
+    return points;
+end proc;
+
+MultivariateMeridianLoop := proc(
+    system,
+    basepoint::list,
+    singularPoint::list,
+    transverseDirection::list,
+    radius,
+    vertices::posint,
+    digits::posint,
+    planner::string
+)
+    local normDirection, normValue, phaseNumerator, phase,
+          approachDirection, approach, connectionPlan, connector,
+          circle, reverseConnector, points, k, i;
+    normValue := sqrt(add(abs(transverseDirection[i])^2,
+        i = 1 .. nops(transverseDirection)));
+    if normValue = 0 then error "a transverse direction must be nonzero"; end if;
+    normDirection := [seq(transverseDirection[i] / normValue,
+        i = 1 .. nops(transverseDirection))];
+    phaseNumerator := add(conjugate(normDirection[i]) *
+        (basepoint[i] - singularPoint[i]),
+        i = 1 .. nops(normDirection));
+    phase := `if`(abs(phaseNumerator) = 0, 1,
+        phaseNumerator / abs(phaseNumerator));
+    approachDirection := [seq(phase * normDirection[i],
+        i = 1 .. nops(normDirection))];
+    approach := [seq(evalf(singularPoint[i] + radius*approachDirection[i]),
+        i = 1 .. nops(singularPoint))];
+    connectionPlan := PlanPath(system, basepoint, approach,
+        'mode' = planner, 'digits' = digits, 'branchSide' = -1);
+    connector := connectionPlan:-points;
+    circle := [seq([seq(evalf(singularPoint[i] +
+        radius*exp(2*Pi*I*k/vertices)*approachDirection[i]),
+        i = 1 .. nops(singularPoint))], k = 1 .. vertices)];
+    reverseConnector := ReversePath(connector);
+    points := [op(connector), op(circle)];
+    if nops(reverseConnector) > 1 then
+        points := [op(points), op(reverseConnector[2 .. -1])];
+    end if;
+    return points;
+end proc;
+
+LoopSegmentsSafe := proc(system, points::list, digits::posint, clearance)
+    local segment, checkValue;
+    for segment to nops(points)-1 do
+        checkValue := SegmentSafety(system, points[segment],
+            points[segment+1], digits, clearance);
+        if not checkValue[1] then return false; end if;
+    end do;
+    return true;
+end proc;
+
+ValidateMeridianComponent := proc(
+    system,
+    singularPoint::list,
+    transverseDirection::list,
+    digits::posint
+)
+    local divisor, tolerance, vanishingFactors, transverseFactors,
+          factorValue, valueAtPoint, directionalDerivative, i;
+    if nops(singularPoint) <> SystemNVariables(system) or
+       nops(transverseDirection) <> SystemNVariables(system) then
+        error "a meridian component point or direction has the wrong dimension";
+    end if;
+    if add(abs(transverseDirection[i]),i=1..nops(transverseDirection)) = 0 then
+        error "a transverse direction must be nonzero";
+    end if;
+    divisor := SingularFactors(system);
+    tolerance := evalf(10^(-max(8,iquo(digits,2))));
+    vanishingFactors := []; transverseFactors := [];
+    for factorValue in divisor:-factors do
+        valueAtPoint := evalf(subs(seq(divisor:-variables[i]=singularPoint[i],
+            i=1..nops(singularPoint)),factorValue));
+        if abs(valueAtPoint) <= tolerance then
+            vanishingFactors := [op(vanishingFactors),factorValue];
+            directionalDerivative := evalf(subs(seq(divisor:-variables[i]=
+                singularPoint[i],i=1..nops(singularPoint)),
+                add(diff(factorValue,divisor:-variables[i])*
+                    transverseDirection[i],i=1..nops(singularPoint))));
+            if abs(directionalDerivative) > tolerance then
+                transverseFactors := [op(transverseFactors),factorValue];
+            end if;
+        end if;
+    end do;
+    if nops(vanishingFactors) = 0 then
+        error "the proposed meridian point is not on the detected singular divisor";
+    elif nops(vanishingFactors) > 1 then
+        error "the proposed meridian point lies on an intersection of detected divisor components";
+    elif nops(transverseFactors) <> 1 then
+        error "the proposed meridian direction is tangent to the detected divisor component";
+    end if;
+    return transverseFactors[1];
+end proc;
+
+MeridianGenerators := proc(
+    system,
+    basepoint::list,
+    {components := "all", planner := "canonical", digits := 0,
+     vertices := 16, radius := 0, maximumRadius := 0.12,
+     maximumGenerators := 12}
+)
+    local effectiveDigits, n, labels, loops, metadata,
+          roots, rootValue, singularities, allSingularities, singularity,
+          nearestSeparation, other, localRadius, labelValue,
+          endpoint, singularPoint, transverse,
+          variable, generated, entry, loopPoints, radiusAttempt,
+          matchDistance, componentTolerance,
+          normValue, normDirection, transverseEndpoint,
+          transverseRoots, rootDistance, i;
+    effectiveDigits := `if`(digits = 0, system:-digits, digits);
+    n := SystemNVariables(system);
+    if nops(basepoint) <> n then error "the basepoint has the wrong length"; end if;
+    if vertices < 8 then error "a meridian needs at least eight vertices"; end if;
+    if radius < 0 or maximumRadius <= 0 then
+        error "radius must be nonnegative and maximumRadius must be positive";
+    end if;
+    componentTolerance := evalf(10^(-max(8,iquo(effectiveDigits,2))));
+    labels := []; loops := []; metadata := []; generated := 0;
+    if n = 1 then
+        roots := RestrictedSingularRoots(system, basepoint,
+            [basepoint[1] + 1], 'digits' = effectiveDigits);
+        allSingularities := [seq(evalf(basepoint[1] + rootValue),
+            rootValue in roots)];
+        if components = "all" then
+            singularities := allSingularities;
+        elif type(components, list) then
+            singularities := components;
+        else
+            error "components must be all or a list of singular points";
+        end if;
+        for singularity in singularities do
+            if generated >= maximumGenerators then break; end if;
+            if nops(allSingularities) = 0 then
+                error "no univariate singularity was detected";
+            end if;
+            matchDistance := min(seq(abs(other-singularity),
+                other in allSingularities));
+            if matchDistance > componentTolerance then
+                error "a requested univariate meridian centre is not a detected singular point";
+            end if;
+            ValidateMeridianComponent(system,[singularity],[1],effectiveDigits);
+            nearestSeparation := abs(basepoint[1] - singularity);
+            for other in allSingularities do
+                if abs(other-singularity) > componentTolerance then
+                    nearestSeparation := min(nearestSeparation,
+                        abs(other - singularity));
+                end if;
+            end do;
+            if radius <> 0 and radius >= nearestSeparation*(1-componentTolerance) then
+                error "the requested univariate meridian radius contains the basepoint or another singular point";
+            end if;
+            localRadius := `if`(radius = 0,
+                min(maximumRadius, 0.18*nearestSeparation), radius);
+            if localRadius <= 0 then next; end if;
+            for radiusAttempt to 8 do
+                loopPoints := UnivariateMeridianLoop(system,
+                    map(evalf, basepoint), singularity, localRadius,
+                    vertices, effectiveDigits, planner);
+                if LoopSegmentsSafe(system, loopPoints, effectiveDigits,
+                    10^(-max(8,iquo(effectiveDigits,2)))) then break; end if;
+                localRadius := localRadius/2;
+            end do;
+            if radiusAttempt > 8 then
+                error "a safe radius for a univariate meridian was not found";
+            end if;
+            generated := generated + 1;
+            labelValue := cat("D", generated);
+            labels := [op(labels), labelValue];
+            loops := [op(loops), loopPoints];
+            metadata := [op(metadata), MakeMeridianMetadataRecord(
+                labelValue, [singularity], [1], localRadius)];
+        end do;
+    elif components = "all" then
+        for variable to n do
+            endpoint := [op(basepoint)]; endpoint[variable] := endpoint[variable] + 1;
+            roots := RestrictedSingularRoots(system, basepoint, endpoint,
+                'digits' = effectiveDigits);
+            for rootValue in roots do
+                if generated >= maximumGenerators then break; end if;
+                singularPoint := [op(basepoint)];
+                singularPoint[variable] := singularPoint[variable] + rootValue;
+                transverse := [seq(`if`(i = variable, 1, 0), i = 1 .. n)];
+                try
+                    ValidateMeridianComponent(system,singularPoint,
+                        transverse,effectiveDigits);
+                catch:
+                    next;
+                end try;
+                nearestSeparation := abs(rootValue);
+                for other in roots do
+                    if abs(other-rootValue) > componentTolerance then
+                        nearestSeparation := min(nearestSeparation,
+                            abs(other-rootValue));
+                    end if;
+                end do;
+                if radius <> 0 and
+                   radius >= nearestSeparation*(1-componentTolerance) then
+                    error "the requested multivariate meridian radius contains the basepoint or another singular point on its transverse slice";
+                end if;
+                localRadius := `if`(radius = 0,
+                    min(maximumRadius, 0.15*nearestSeparation), radius);
+                if localRadius <= 0 then next; end if;
+                for radiusAttempt to 8 do
+                    loopPoints := MultivariateMeridianLoop(system,
+                        map(evalf, basepoint), singularPoint, transverse,
+                        localRadius, vertices, effectiveDigits, planner);
+                    if LoopSegmentsSafe(system, loopPoints, effectiveDigits,
+                        10^(-max(8,iquo(effectiveDigits,2)))) then break; end if;
+                    localRadius := localRadius/2;
+                end do;
+                if radiusAttempt > 8 then
+                    error "a safe radius for a multivariate meridian was not found";
+                end if;
+                generated := generated + 1; labelValue := cat("D", generated);
+                labels := [op(labels), labelValue];
+                loops := [op(loops), loopPoints];
+                metadata := [op(metadata), MakeMeridianMetadataRecord(
+                    labelValue, singularPoint, transverse, localRadius,
+                    variable)];
+            end do;
+            if generated >= maximumGenerators then break; end if;
+        end do;
+    elif type(components, list) then
+        for entry in components do
+            if generated >= maximumGenerators then break; end if;
+            try
+                singularPoint := entry:-point;
+                transverse := entry:-direction;
+                labelValue := entry:-label;
+            catch:
+                error "a multivariate component must be a record with point, direction, and label";
+            end try;
+            ValidateMeridianComponent(system,singularPoint,transverse,
+                effectiveDigits);
+            normValue := sqrt(add(abs(transverse[i])^2,i=1..n));
+            normDirection := [seq(transverse[i]/normValue,i=1..n)];
+            transverseEndpoint := [seq(evalf(singularPoint[i]+
+                normDirection[i]),i=1..n)];
+            transverseRoots := RestrictedSingularRoots(system,
+                singularPoint,transverseEndpoint,'digits'=effectiveDigits);
+            if nops(transverseRoots) = 0 or
+               min(seq(abs(rootValue),rootValue in transverseRoots)) >
+                   componentTolerance then
+                error "the proposed meridian centre was not detected as a restricted root on its transverse slice";
+            end if;
+            nearestSeparation := infinity;
+            for rootValue in transverseRoots do
+                rootDistance := abs(rootValue);
+                if rootDistance > componentTolerance then
+                    nearestSeparation := min(nearestSeparation,rootDistance);
+                end if;
+            end do;
+            if radius <> 0 and nearestSeparation <> infinity and
+               radius >= nearestSeparation*(1-componentTolerance) then
+                error "the requested multivariate meridian radius contains another singular point on its transverse slice";
+            end if;
+            localRadius := `if`(radius = 0,
+                `if`(nearestSeparation=infinity,maximumRadius,
+                    min(maximumRadius,0.15*nearestSeparation)),radius);
+            for radiusAttempt to 8 do
+                loopPoints := MultivariateMeridianLoop(system,
+                    map(evalf, basepoint), singularPoint, transverse,
+                    localRadius, vertices, effectiveDigits, planner);
+                if LoopSegmentsSafe(system, loopPoints, effectiveDigits,
+                    10^(-max(8,iquo(effectiveDigits,2)))) then break; end if;
+                localRadius := localRadius/2;
+            end do;
+            if radiusAttempt > 8 then
+                error "a safe radius for a user meridian was not found";
+            end if;
+            generated := generated + 1;
+            labels := [op(labels), labelValue];
+            loops := [op(loops), loopPoints];
+            metadata := [op(metadata), MakeMeridianMetadataRecord(
+                labelValue, singularPoint, transverse, localRadius)];
+        end do;
+    else
+        error "components must be all or a list";
+    end if;
+    if nops(loops) = 0 then
+        error "no meridian generator was found on the selected coordinate slices";
+    end if;
+    return MakeLoopSetRecord(map(evalf, basepoint), labels, loops, metadata);
+end proc;
+
+NumericalMonodromyRepresentation := proc(
+    basepoint::list,
+    basis::list,
+    generators,
+    matrices::table,
+    {verifiedRelations := [], generatorSetComplete := "unknown"}
+)
+    if not member(generatorSetComplete, ["unknown", "yes", "no"]) then
+        error "generatorSetComplete must be unknown, yes, or no";
+    end if;
+    return MakeMonodromyRecord(basepoint, basis, generators, matrices,
+        verifiedRelations, generatorSetComplete);
+end proc;
+
+Monodromy := proc(
+    system,
+    loopsOrGeneratorSet,
+    {digits := 0, mode := "fast", taylorOrder := 0,
+     verificationOrder := 8, maximumSteps := 20000,
+     safetyFactor := 0.62, verifyReverse := true,
+     maximumPrecisionEscalations := 2, verbose := false}
+)
+    local loops, labels, basepoint, matrices, relations,
+           transports, transport, labelValue, effectiveDigits,
+           loopValue, pointValue, closureTolerance, flatness,
+           exactFlatness, normalizedLabels, i, j;
+    if not member(system:-hpType,["PfaffianSystem","UserPfaffianSystem"]) then
+        error "Monodromy requires a full PfaffianSystem";
+    end if;
+    try
+        if loopsOrGeneratorSet:-hpType = "MeridianGeneratorSet" then
+            loops := loopsOrGeneratorSet:-loops;
+            labels := loopsOrGeneratorSet:-labels;
+            basepoint := loopsOrGeneratorSet:-basepoint;
+        else
+            error "not generator set";
+        end if;
+    catch:
+        loops := loopsOrGeneratorSet;
+        if not type(loops,list) or nops(loops) = 0 then
+            error "the loop list is empty";
+        end if;
+        labels := [seq(cat("D", i), i = 1 .. nops(loops))];
+        basepoint := loops[1][1];
+    end try;
+    if not type(loops,list) or nops(loops) = 0 then
+        error "the loop list is empty";
+    end if;
+    if nops(labels) <> nops(loops) then
+        error "the number of loop labels does not match the loop count";
+    end if;
+    if not andmap(labelEntry -> type(labelEntry,{string,symbol}),labels) then
+        error "monodromy generator labels must be strings or symbols";
+    end if;
+    normalizedLabels := map(labelEntry -> convert(labelEntry,string),labels);
+    if nops(convert(normalizedLabels,set)) <> nops(normalizedLabels) then
+        error "monodromy generator labels must be unique";
+    end if;
+    labels := normalizedLabels;
+    effectiveDigits := `if`(digits = 0, system:-digits, digits);
+    closureTolerance := evalf(10^(-max(8,iquo(effectiveDigits,2))));
+    if not type(basepoint,list) or
+       nops(basepoint) <> SystemNVariables(system) then
+        error "the loop basepoint has the wrong dimension";
+    end if;
+    for loopValue in loops do
+        if not type(loopValue,list) or nops(loopValue) < 2 then
+            error "each monodromy generator must be a nonempty closed path";
+        end if;
+        for pointValue in loopValue do
+            if not type(pointValue,list) or
+               nops(pointValue) <> nops(basepoint) then
+                error "a monodromy path point has the wrong dimension";
+            end if;
+        end do;
+        if max(seq(abs(loopValue[1][j]-loopValue[-1][j]),
+            j = 1 .. nops(basepoint))) > closureTolerance then
+            error "an open path cannot be used as a monodromy generator";
+        end if;
+        if max(seq(abs(loopValue[1][j]-basepoint[j]),
+            j = 1 .. nops(basepoint))) > closureTolerance then
+            error "all monodromy generators must have the same basepoint";
+        end if;
+    end do;
+    if system:-hpType = "UserPfaffianSystem" then
+        exactFlatness := system:-exactFlatness;
+        if exactFlatness:-status = "unknown_inexact" then
+            error "numerical user Pfaffian connections cannot be certified flat and are not accepted for monodromy";
+        elif not exactFlatness:-passed then
+            error "the user Pfaffian connection is not symbolically flat; nonzero curvature entries=%1", exactFlatness:-nonzeroCurvatures;
+        end if;
+    end if;
+    flatness := CheckIntegrability(system,'point'=basepoint);
+    if not flatness:-passed then
+        error "the supplied Pfaffian connection failed the flatness check at the loop basepoint; residual=%1", flatness:-residual;
+    end if;
+    matrices := table(); transports := table(); relations := [];
+    for i to nops(loops) do
+        labelValue := labels[i];
+        transport := TransportFundamental(system, loops[i],
+            'digits' = digits, 'mode' = mode,
+            'taylorOrder' = taylorOrder,
+            'verificationOrder' = verificationOrder,
+            'maximumSteps' = maximumSteps,
+            'safetyFactor' = safetyFactor,
+            'verifyReverse' = verifyReverse,
+            'maximumPrecisionEscalations' = maximumPrecisionEscalations,
+            'verbose' = verbose);
+        matrices[labelValue] := MaterializeTransport(transport);
+        transports[labelValue] := transport;
+        if verifyReverse then
+            relations := [op(relations), MakeRelationRecord(
+                cat(labelValue, "^-1*", labelValue),
+                transport:-diagnostics:-reverseError, true)];
+        end if;
+    end do;
+    return MakeMonodromyRecord(basepoint, system:-basis,
+        MakeGeneratorBundleRecord(loops, labels, transports), matrices,
+        relations, "unknown");
+end proc;
+
+MonodromyMatrix := proc(representation, labelValue)
+    local lookupKey;
+    if representation:-hpType <> "NumericalMonodromyRepresentation" then
+        error "expected a NumericalMonodromyRepresentation";
+    end if;
+    lookupKey := labelValue;
+    if not assigned(representation:-matrices[lookupKey]) and
+       type(labelValue, symbol) then
+        lookupKey := convert(labelValue, string);
+    end if;
+    if not assigned(representation:-matrices[lookupKey]) then
+        error "unknown monodromy generator %1", labelValue;
+    end if;
+    return representation:-matrices[lookupKey];
 end proc;
 
 NormaliseWaypoints := proc(target::list, branchSide::integer, waypoints::list)
