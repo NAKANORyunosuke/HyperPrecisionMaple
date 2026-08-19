@@ -89,6 +89,17 @@ The AGM test checks
 
 at `z=1-10^(-8)`.
 
+The worksheet `examples/lauricella_fd_quarter.mw` evaluates
+`LauricellaFD(1/4,[1/4,1/4,1/4],1,x)`, checks its diagonal reduction to a
+Gauss function, constructs the full rank-four Pfaffian connection, and
+transports a full fundamental matrix. The adjacent Markdown file is the
+worksheet source, and `examples/lauricella_fd_quarter.mpl` is the command-line
+version. Regenerate the worksheet from the `examples` directory by
+
+```powershell
+cmaple -q build_lauricella_fd_quarter_worksheet.mpl
+```
+
 ## Full Pfaffian connection
 
 Construct a complete Horn series and its full connection as follows:
