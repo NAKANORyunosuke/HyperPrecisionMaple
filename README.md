@@ -1,198 +1,326 @@
 # HyperPrecisionMaple
 
-`HyperPrecisionMaple` evaluates complete Horn-type multivariate
-hypergeometric series with arbitrary precision at real or complex points. It
-implements the Pfaffian-transport method of Banik and Bera in Maple 2025.
+## Overview
 
-This Maple port is maintained separately from the reference Mathematica
-implementation and from `HyperPrecision.jl`. It does not require Mathematica,
-FiniteFlow, or AMFlow.
+`HyperPrecisionMaple` is a Maple 2025 implementation of arbitrary-precision
+analytic continuation for complete Horn-type hypergeometric series. It builds
+an annihilating PDE ideal, selects a finite derivative basis, evaluates the
+full multivariate Pfaffian connection
 
-The package performs the following computations.
+```math
+\partial_{x_i}Y=\Omega_i(x)Y,
+```
 
-1. It obtains the neighbouring coefficient ratios of a Horn series.
-2. It generates the annihilating partial differential equations.
-3. It differentiates these equations and determines a finite derivative basis
-   by a high-precision Macaulay-matrix reduction.
-4. It restricts the Pfaffian connection to a contour from the origin to the
-   target point.
-5. It transports the boundary vector by matching local Frobenius power
-   series.
-6. It reconstructs a Laurent expansion from evaluations on an epsilon grid.
+and restricts that connection to piecewise-linear paths. In addition to a
+distinguished hypergeometric solution, the package transports the full
+fundamental matrix and computes numerical monodromy representations.
 
-## Requirements
+The implementation follows the Pfaffian-transport method of Banik and Bera.
+It is independent of the reference Mathematica package and of
+`HyperPrecision.jl`; neither is required at run time.
 
-- Maple 2025. Earlier releases have not been tested.
-- The command-line tests use `cmaple`.
+## Features
 
-## Loading the package
+- Complete Horn series with positive or negative integral weight rows.
+- Full Pfaffian connections for Appell `F1`--`F4`, Horn `G` and `H`, and
+  Lauricella `FA`--`FD` functions.
+- Exact singular-support extraction from the selected Macaulay pivot
+  determinant when the parameters are exact.
+- Canonical and user-supplied paths, a non-mutating `safe_opt`, and an
+  explicitly unverified `fast_opt` shortcut planner.
+- Restricted-root-based Taylor steps along every path segment.
+- Factorized full fundamental transport, reverse-path and differential-residual
+  checks, order checks, and precision-escalation history.
+- Univariate polygon loops, multivariate meridians, and numerical monodromy
+  matrices.
+- Fixed-parameter values, epsilon Laurent expansions, and held-call syntax.
+- Arbitrary-precision midpoint arithmetic in `fast` mode.
 
-Start Maple in this directory and read the source file.
+## Requirements and installation
+
+- Maple 2025. Earlier Maple releases have not been tested.
+- `cmaple` on `PATH` for the command-line test runner.
+
+Clone the repository and load the source file from Maple:
 
 ```maple
 read "HyperPrecision.mpl":
 with(HyperPrecision):
 ```
 
-## Fixed-parameter evaluation
+No package installation or external numerical library is required.
 
-The following evaluation lies outside the disk of convergence of the defining
-Gauss series.
+## Quick start
+
+The following point lies outside the convergence disk of the defining Gauss
+series:
 
 ```maple
-hpValue := HypergeometricPFQ([1, 1], [2], -2, 'digits' = 40);
-
+hpValue := HypergeometricPFQ([1,1],[2],-2,'digits'=40);
 # log(3)/2
 ```
 
-The predefined interfaces are
+The predefined interfaces are `Hypergeometric2F1`, `HypergeometricPFQ`,
+`AppellF1`--`AppellF4`, `HornG1`--`HornG3`, `HornH1`--`HornH7`, and
+`LauricellaFA`--`LauricellaFD`.
 
-- `Hypergeometric2F1` and `HypergeometricPFQ`, with the latter restricted to
-  functions of type pF(p-1);
-- `AppellF1`, `AppellF2`, `AppellF3`, and `AppellF4`;
-- `HornG1`, `HornG2`, and `HornG3`;
-- `HornH1` through `HornH7`;
-- `LauricellaFA`, `LauricellaFB`, `LauricellaFC`, and `LauricellaFD`.
-
-For example, the two-variable Lauricella function `FD` coincides with Appell's
-function `F1`.
+An `AffineParameter(c,s)` denotes `c+s*epsilon`. Section 4.4 of the paper is
+reproduced by
 
 ```maple
-appellValue := AppellF1(1/2, 2/3, 3/4, 5/2, 1/10, 1/5, 'digits' = 30):
-lauricellaValue := LauricellaFD(1/2, [2/3, 3/4], 5/2, [1/10, 1/5],
-    'digits' = 30):
-evalf(abs(appellValue-lauricellaValue));
-```
-
-## Laurent expansion in epsilon
-
-An `AffineParameter(c, s)` represents `c + s*epsilon`. The example in Section
-4.4 of the paper is computed as follows.
-
-```maple
-b2 := EpsilonParameter(1, 1):
-c2 := EpsilonParameter(-1, -1):
-
-paperExpansion := AppellF2(
-    2, 3/2, b2, 4, c2, 3, 11/3,
-    'epsilonOrder' = 1,
-    'digits' = 10
-):
-
-LaurentCoefficient(paperExpansion, -1);
-LaurentCoefficient(paperExpansion, 0);
-LaurentCoefficient(paperExpansion, 1);
+b2 := EpsilonParameter(1,1):
+c2 := EpsilonParameter(-1,-1):
+paperExpansion := AppellF2(2,3/2,b2,4,c2,3,11/3,
+    'epsilonOrder'=1,'digits'=10):
+LaurentPolynomial(paperExpansion,epsilon);
 paperExpansion:-estimatedError;
-LaurentPolynomial(paperExpansion, epsilon);
 ```
 
-With `branchSide = -1`, the coefficients agree with the branch reported in
-the paper:
+With the default `branchSide=-1`, the coefficients through order one agree
+with the branch reported in the paper. `HypExpand` and `HypFunctionExpand`
+provide the corresponding general-series and held-call interfaces.
 
-```text
-epsilon^(-1):   0.5149686376
-epsilon^(0):    0.528662817 - 4.194390019*I
-epsilon^(1):  -10.978138236 - 4.834942296*I
-```
-
-The pole order is inferred from affine Pochhammer parameters. The keyword
-`poleOrder` overrides the inferred order.
-
-## A general Horn series
-
-We define
-
-```math
-F(x)=\sum_{m\in\mathbb N_0^n}
-\frac{\prod_r(a_r)_{\mu_r\cdot m}}
-     {\prod_s(b_s)_{\nu_s\cdot m}}\frac{x^m}{m!}.
-```
-
-The rows of `upperWeights` are the vectors `mu_r`, and the rows of
-`lowerWeights` are the vectors `nu_s`.
-
-```maple
-f2series := HornSeries(
-    [2, 3/2, 5/4],
-    [[1, 1], [1, 0], [0, 1]],
-    [4, 7/3],
-    [[1, 0], [0, 1]],
-    "F2"
-):
-
-orders := FindHypergeometricOrder(f2series, 'digits' = 40):
-rankAndBasis := FindHolonomicRank(f2series, 'digits' = 40):
-f2system := FindPfaffianSystem(f2series, 'digits' = 40):
-matrices := ConnectionMatrices(f2system, [1/10, 1/5]):
-check := CheckIntegrability(f2system):
-f2value := Evaluate(f2series, [3, 11/3], 'digits' = 30):
-```
-
-`PDEGenerator` returns the sparse annihilating operators. A differential
-multi-index is a table key, and its value is a sparse polynomial table in the
-kinematic variables. `FindHolonomicRank` returns `[rank, basis]`. The basis uses
-ordinary partial derivatives and is sorted by total derivative order.
-
-The keyword `branchSide` is `-1` by default. The values `-1` and `1` select the
-two sides of a real singular locus. Set it to `0` for a straight real contour,
-or pass a list of complex contour points with the keyword `waypoints`.
-
-## AGM cross-check
-
-The test `test/agm.mpl` compares the transported value with Gauss's identity
+The AGM test checks
 
 ```math
 {}_2F_1\left(\tfrac12,\tfrac12;1;z\right)
-=\operatorname{AGM}(1,\sqrt{1-z})^{-1}.
+=\operatorname{AGM}(1,\sqrt{1-z})^{-1},
 ```
 
-The extended test uses `z = 1-10^(-8)`, where the defining hypergeometric
-series converges too slowly for the truncation used by the package.
+at `z=1-10^(-8)`.
 
-## Tests
+## Full Pfaffian connection
 
-From the `test` directory, run
+Construct a complete Horn series and its full connection as follows:
 
-```powershell
-cmaple -q runtests.mpl
-cmaple -q agm.mpl
-cmaple -q paper_example.mpl
+```maple
+f2Series := FunctionSeries("AppellF2",[2,3/2,5/4,4,7/3],2):
+f2System := FindPfaffianSystem(f2Series,'digits'=40):
+rankAndBasis := FindHolonomicRank(f2Series,'digits'=40):
+omega := ConnectionMatrices(f2System,[1/10,1/5]):
+flatness := CheckIntegrability(f2System):
+divisor := SingularFactors(f2System):
 ```
 
-On Windows, the repository runner provides the same commands:
+`PDEGenerator` returns the sparse annihilating operators.
+`FindHolonomicRank` returns `[rank,basis]`, where the basis consists of
+ordinary partial derivatives ordered by total degree. `ConnectionMatrices`
+evaluates every matrix `Omega[i]` at an arbitrary regular point, rather than
+constructing only a pre-restricted connection.
+
+`SingularFactors` returns the factored determinant of the selected pivot
+matrix. Its zero set contains all poles of this connection representation; it
+may also contain apparent or basis-dependent singular factors.
+`RestrictedSingularRoots(system,p,q)` substitutes `p+t*(q-p)` and returns all
+detected complex roots in the segment parameter `t`.
+
+The milestone suite constructs full connections for Appell `F1`, `F2`, and
+`F3`, and for three-variable Lauricella `FD`.
+
+A rational connection can also be supplied directly:
+
+```maple
+userSystem := UserPfaffianSystem(
+    [Matrix([[y]]),Matrix([[x]])],[x,y],
+    'digits'=40,'singularFactors'=[]):
+```
+
+`PfaffianFromConnection` is an alias. All matrices must have one common square
+shape, and there must be one matrix per variable. Denominators and optional
+declared factors form the singular support. A user system has no distinguished
+hypergeometric solution, so its initial vector must be supplied explicitly.
+`CheckExactFlatness` symbolically simplifies every curvature entry of an exact
+rational user connection. An inexact connection has flatness status
+`"unknown_inexact"`; it may be transported, but it is not accepted as a
+monodromy representation.
+
+## Path planning
+
+`PlanPath` always returns a `PfaffianPathPlan` whose `points` include both
+endpoints:
+
+```maple
+path := PlanPath(f2System,[1/10,1/10],[3/2+I/5,11/6-I/7],
+    'mode'="safe_opt",'pathClass'="principal",'branchSide'=-1):
+```
+
+The modes are:
+
+- `canonical`: retain user waypoints, or construct a deterministic complex
+  detour if the direct segment meets the detected divisor;
+- `user`: retain the supplied piecewise-linear representative;
+- `safe_opt`: return the canonical or user representative unchanged because
+  this Maple version has no interval certificate for a homotopy strip;
+- `fast_opt`: remove sampled redundant waypoints after point and segment
+  checks, without claiming preservation of the path class.
+
+The plan records restricted roots, minimum clearances, accepted shortcuts,
+and segment counts. `ReversePath(path)` constructs the reversed point list.
+Finite real and nonreal restricted roots are retained. When a direct segment
+is singular, the canonical planner tests the effective coordinates on the
+requested `branchSide`; it never silently switches to the opposite side. If
+that deterministic deformation meets another divisor, planning fails closed
+and the opposite side or explicit waypoints must be requested by the user.
+For `safe_opt`, `homotopyVerification` is
+`"not_certified_no_change"`. The sampled `fast_opt` result is marked
+`"sampled_unverified"`.
+
+## Fundamental transport
+
+Use a regular basepoint in a convergence region and normalize the fundamental
+matrix there:
+
+```maple
+gauss := FunctionSeries("Hypergeometric2F1",[1/3,1/4,1/2],1):
+system := FindPfaffianSystem(gauss,'digits'=30):
+basepoint := ChooseBasepoint(system,'digits'=25):
+initialVector := InitialVector(system,basepoint,'digits'=25):
+path := PlanPath(system,basepoint,[4/5],'mode'="canonical"):
+transport := TransportFundamental(system,path,'digits'=25):
+
+denseMatrix := MaterializeTransport(transport):
+continuedVector := ApplyTransport(transport,initialVector):
+inverseTransport := InverseTransport(transport):
+```
+
+`TransportFundamental` computes every column simultaneously by the Taylor
+recurrence
+
+```math
+U_{n+1}=\frac1{n+1}\sum_{k=0}^{n}A_kU_{n-k},\qquad U_0=I.
+```
+
+It returns a `FactorizedFundamentalTransport`. The `factors` remain in path
+order and can also be accessed through the record closures
+`transport:-Apply(v)`, `transport:-Materialize()`, and
+`transport:-Inverse()`. The `history` contains the segment, center, step,
+restricted radius, truncation order, working precision, tail estimate, and
+`N` versus `N+Delta` discrepancy for every patch. It also records an
+independently evaluated local differential residual `dU/dt-A(t)U`.
+`diagnostics` contains its maximum, the independently transported reverse-path
+residual, and every precision attempt. An inverse transport reverses the
+factor order and rewrites segment numbers, patch parameters, and centers in
+reverse-path coordinates; its diagnostics identify this algebraic history.
+
+The original `TransportDE` API remains available for the distinguished
+hypergeometric solution and is backward compatible.
+
+## Monodromy
+
+For one variable, `MeridianGenerators` connects the basepoint to a small
+counterclockwise polygon around each requested singular point. For several
+variables, it constructs a transverse meridian around a detected coordinate
+slice or a user-specified smooth divisor point:
+
+```maple
+loops := MeridianGenerators(system,[1/5],
+    'components'=[1],'vertices'=8,'radius'=1/10):
+rho := Monodromy(system,loops,'digits'=20):
+M1 := MonodromyMatrix(rho,"D1"):
+```
+
+For a custom multivariate component, pass a record with fields `point`,
+`direction`, and `label`. The point must lie on exactly one detected factor,
+and the direction must be transverse. Every detected restricted root on that
+transverse line bounds the disk radius. An explicit disk that contains any
+other singular germ is rejected; an automatic radius is reduced. Connector
+edges and every polygon chord are checked as well. In one
+variable, requested centres must match detected roots and the radius is bounded
+by all other roots, not only by the requested component list. The monodromy
+matrix is obtained by direct full fundamental transport around the closed
+path, so the method is not based on a nonresonant residue shortcut.
+
+`NumericalMonodromyRepresentation` stores the basepoint, derivative basis,
+loops, matrices, verified reverse relations, and
+`generatorSetComplete="unknown"`. Automatically detected coordinate-slice
+meridians are useful generators; they are not claimed to be a complete
+presentation of the fundamental group. `Monodromy` rejects empty or open
+paths, mixed loop basepoints, duplicate labels, and connections that fail the
+required flatness checks. Exact rational user connections must pass the full
+symbolic curvature identity; inexact user connections are not accepted for
+representations. Every automatically generated polygon edge is checked
+through its restricted roots, not merely at its vertices.
+
+The extended suite verifies the known `x=1` invariants for
+`2F1(1/3,1/4;1/2;x)` and for an Appell `F3` transverse slice. In both cases
+the nontrivial eigenvalue is `exp(-Pi*I/6)`. The `F3` test also checks the
+reflection characteristic relation `(M-I)(M-exp(-Pi*I/6)I)=0` numerically.
+
+## Tests and benchmarks
+
+Run the regular and Pfaffian-engine tests with
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run-tests.ps1
-powershell -ExecutionPolicy Bypass -File .\run-tests.ps1 -AGM
-powershell -ExecutionPolicy Bypass -File .\run-tests.ps1 -AGM -Extended
 ```
 
-The first command runs the regular test suite. The AGM and paper examples are
-separate because they perform several high-precision transports.
+Additional suites are selected explicitly:
 
-## Numerical scope
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run-tests.ps1 -AGM
+powershell -ExecutionPolicy Bypass -File .\run-tests.ps1 -Extended
+powershell -ExecutionPolicy Bypass -File .\run-tests.ps1 -Monodromy
+powershell -ExecutionPolicy Bypass -File .\run-tests.ps1 -Benchmarks
+```
 
-- The derivative-basis reduction is numerical. Parameters on a resonant locus
-  can change the holonomic rank or the selected derivative basis. Add an
-  affine epsilon regulator or pass non-resonant parameters in this case.
-- Targets on the singular locus are not supported.
-- Epsilon-grid evaluations are serial in this version.
-- The package handles the complete Horn form represented by `HornSeries`.
-  It does not parse a symbolic summand automatically.
+`-Extended` runs the paper example. `-Monodromy` runs the slower known
+monodromy examples. The benchmark reports representative evaluation time,
+canonical versus `fast_opt` segment and Taylor-patch counts, reverse error,
+and known monodromy invariants. Timings depend on Maple and the host CPU;
+correctness checks use invariant values rather than timing thresholds.
 
-## License and provenance
+## Numerical modes and guarantees
 
-`HyperPrecisionMaple` is distributed under GNU General Public License version
-3 only. See `LICENSE`.
+`mode="fast"` uses guarded arbitrary-precision midpoint arithmetic. Its
+checks comprise restricted-root step control, an `N` versus `N+Delta`
+comparison, a sparse-safe local tail estimate, the differential residual,
+independent reverse-path transport, and automatic working-precision and order
+escalation. These are strong numerical checks, but not a proof by interval
+arithmetic.
 
-This package is a reimplementation of the method of Banik and Bera. Their
-Mathematica reference implementation is distributed under GPL-3.0 at
-<https://github.com/HyperPrecision/HyperPrecision>. This repository does not
-include the Mathematica source files. See `NOTICE` for attribution.
+`mode="certified"` is reserved for a future complex-ball implementation.
+Calling it raises an explicit error; the package never silently labels a
+midpoint result as certified.
 
-## Reference
+## Limitations
+
+- The derivative basis is selected by a high-precision numerical Macaulay
+  reduction. Resonant parameters can change the rank or basis; use an affine
+  epsilon regulator or nonresonant parameters when necessary.
+- Exact factorization is available when the Horn parameters and epsilon value
+  are exact. With inexact parameters, the returned pivot determinant can be
+  left as a single numerical factor.
+- Targets and Taylor centers on the detected singular locus are unsupported.
+- `safe_opt` deliberately performs no shortcut without an interval
+  certificate. `fast_opt` uses sampled homotopy strips and does not certify
+  high-dimensional homotopy equivalence.
+- `pathClass` is retained as provenance metadata. In this version, the actual
+  representative is controlled by `branchSide` and explicit waypoints; named
+  branch-cut atlases are not inferred from a string label. The canonical
+  planner does not cross a colliding detour scale or substitute the opposite
+  branch side automatically.
+- Automatic multivariate meridians search coordinate slices. A general smooth
+  divisor point and transverse direction may need to be supplied by the user.
+- Direct rational user Pfaffian systems are supported, but symbolic gauge
+  normalization and an automatically selected distinguished initial solution
+  are not. Exact rational connections receive a symbolic curvature check;
+  inexact user connections can be transported but cannot define a numerical
+  monodromy representation in this release.
+- Resonant Levelt bases, logarithmic local Frobenius bases, complex-ball tail
+  bounds, braid generators, invariant-form solvers, and a GKZ frontend are not
+  implemented.
+- Epsilon interpolation is serial.
+
+## License and references
+
+`HyperPrecisionMaple` is distributed under the GNU General Public License,
+version 3 only. See `LICENSE`, `NOTICE`, and `THIRD_PARTY_NOTICES.md`.
+
+The method and benchmark examples are based on:
 
 - S. Banik and S. Bera, *HyperPrecision: A Mathematica package for
   High-Precision Numerical Evaluation of Multivariate Hypergeometric
   Functions*, Computer Physics Communications 328 (2026), 110328,
   [arXiv:2605.30216v2](https://arxiv.org/abs/2605.30216v2).
+- The GPL-3.0 reference implementation:
+  <https://github.com/HyperPrecision/HyperPrecision>.
