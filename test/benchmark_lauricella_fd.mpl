@@ -9,7 +9,7 @@ benchmarkDigits := 15:
 benchmarkOrder := 48:
 
 MedianTime := proc(samples::list) local ordered; ordered := sort(samples); return ordered[iquo(nops(ordered)+1,2)]; end proc:
-TimeEvaluation := proc(selectedMethod,repetitions) global benchmarkDigits,benchmarkOrder; local samples,result,startTime,i; samples := []; result := NULL; for i to repetitions do startTime := time(); result := LauricellaFD(1/4,b7,1,x7,'digits'=benchmarkDigits,'method'=selectedMethod,'frobeniusOrder'=benchmarkOrder,'returnDiagnostics'=true); samples := [op(samples),evalf(time()-startTime)]; end do; return [MedianTime(samples),result,samples]; end proc:
+TimeEvaluation := proc(selectedMethod,repetitions) global benchmarkDigits,benchmarkOrder; local samples,result,startTime,i,oldCacheClearLimit; samples := []; result := NULL; oldCacheClearLimit := kernelopts(cacheclearlimit); kernelopts(cacheclearlimit=1); try for i to repetitions do gc(); startTime := time[real](); result := LauricellaFD(1/4,b7,1,x7,'digits'=benchmarkDigits,'method'=selectedMethod,'frobeniusOrder'=benchmarkOrder,'returnDiagnostics'=true); samples := [op(samples),evalf(time[real]()-startTime)]; end do; finally kernelopts(cacheclearlimit=oldCacheClearLimit); end try; return [MedianTime(samples),result,samples]; end proc:
 
 # Warm every applicable method before collecting comparable timings.
 LauricellaFD(1/4,b7,1,x7,'digits'=benchmarkDigits,'method'="series"):
@@ -36,6 +36,11 @@ printf("FD7 auto median = %.6f s, samples=%a, method=%s\n",autoTiming[1],autoTim
 printf("FD7 Pfaffian median = %.6f s, samples=%a, factors=%d\n",pfaffianTiming[1],pfaffianTiming[3],pfaffianTiming[2]:-transportFactors):
 printf("FD7 auto error = %a, Pfaffian error = %a\n",autoError,pfaffianError):
 
+# Identical numerical Int calls can hit Maple's whole-result cache.  The timing
+# helper temporarily lowers cacheclearlimit and collects after every sample, so
+# each result is genuinely recomputed while the loaded code remains warm.  Auto
+# is compared with the fastest measured applicable forced method, including an
+# uncached Euler evaluation.
 if autoTiming[2]:-methodUsed <> "series" or autoTiming[1] > 5 or autoTiming[1] > 1.25*fastestOrdinary+.05 or autoError > 1.e-14 or pfaffianError > 1.e-12 then error "Lauricella FD benchmark gate failed"; end if:
 printf("Lauricella FD benchmark completed.\n"):
 quit:

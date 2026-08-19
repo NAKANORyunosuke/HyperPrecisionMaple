@@ -15,6 +15,11 @@ and restricts that connection to piecewise-linear paths. In addition to a
 distinguished hypergeometric solution, the package transports the full
 fundamental matrix and computes numerical monodromy representations.
 
+Principal-germ evaluations use specialized recurrences before a Pfaffian
+system is constructed. Generalized univariate functions, the four Appell
+functions, the ten named Horn functions, and the four Lauricella families
+have separate dispatch rules and resource gates.
+
 The implementation follows the Pfaffian-transport method of Banik and Bera.
 It is independent of the reference Mathematica package and of
 `HyperPrecision.jl`; neither is required at run time.
@@ -24,6 +29,14 @@ It is independent of the reference Mathematica package and of
 - Complete Horn series with positive or negative integral weight rows.
 - Full Pfaffian connections for Appell `F1`--`F4`, Horn `G` and `H`, and
   Lauricella `FA`--`FD` functions.
+- An `O((p+q)*D)` term recurrence for generalized `pFq` functions through
+  degree `D`, together with Maple's native principal-branch evaluator away
+  from the real branch cut.
+- Convolution kernels for Lauricella `FA`, `FB`, and `FC`. Appell `F2`, `F3`,
+  and `F4` use the corresponding two-variable kernels, while Appell `F1`
+  uses the Lauricella `FD` evaluator.
+- Neighbor-ratio total-degree grids for Horn `G1`--`G3` and `H1`--`H7`,
+  including negative Pochhammer shifts.
 - A grouped total-degree recurrence for Lauricella `FD`, with cost
   `O(D^2+n*D)` through degree `D`, an absolute tail majorant or a guarded
   doubled-degree check, and no multi-index enumeration.
@@ -41,6 +54,11 @@ It is independent of the reference Mathematica package and of
 - Univariate polygon loops, multivariate meridians, and numerical monodromy
   matrices.
 - Fixed-parameter values, epsilon Laurent expansions, and held-call syntax.
+- Common `method`, `returnDiagnostics`, and `returnDerivatives` options for
+  the predefined fixed-parameter interfaces.
+- Exact cancellation of identical upper and lower Pochhammer factors before
+  pole and termination tests, and a preallocation gate for generic Macaulay
+  reductions.
 - Arbitrary-precision midpoint arithmetic in `fast` mode.
 
 ## Requirements and installation
@@ -70,6 +88,85 @@ hpValue := HypergeometricPFQ([1,1],[2],-2,'digits'=40);
 The predefined interfaces are `Hypergeometric2F1`, `HypergeometricPFQ`,
 `AppellF1`--`AppellF4`, `HornG1`--`HornG3`, `HornH1`--`HornH7`, and
 `LauricellaFA`--`LauricellaFD`.
+
+### General hypergeometric dispatch
+
+The generalized univariate evaluator uses one recurrence for the value and
+its first derivative:
+
+```maple
+pfqReport := HypergeometricPFQ([1/7,2/7,3/7],[5/6,7/8],.45,'digits'=30,'returnDiagnostics'=true):
+pfqReport:-value;
+pfqReport:-methodUsed;
+pfqReport:-errorEstimate;
+```
+
+For fixed parameters, `method` can be set to `"auto"`, `"series"`,
+`"native"`, `"pfaffian"`, or `"generic"`. The `"native"` method is
+defined only for generalized univariate functions. The `"generic"` method
+retains the numerical Macaulay route for comparisons. An explicit waypoint
+or a nondefault branch-side request disables principal series, convolution,
+and native evaluation. `TransportDE` normalizes explicit waypoints before it
+tests direct-series eligibility, so an explicit loop is always transported.
+
+The recurrence is automatic for `p<=q` and for `p=q+1` inside `abs(z)<1`.
+For `p>q+1`, the defining series is used only when an upper parameter gives
+exact termination. The native method can be selected separately when Maple
+defines the requested continuation.
+
+Large terminating `1F0` polynomials and terminating `2F1` values at `z=1`
+use exact binomial and Chu--Vandermonde products, respectively. These products
+avoid cancellation among large intermediate terms. Diagnostics identify this
+route as `closed_form`. A nonzero value smaller than `10^(-digits)` is retained;
+component chopping is relative to the complex value rather than absolute.
+The O(1) `1F0` reductions at `z=1` and `z=2` remain available for a large
+polynomial degree. Other terminating recurrences must satisfy
+`maximumDegree` and their operation gate before coefficient generation.
+
+Appell `F1`, `F2`, `F3`, and `F4` are routed to Lauricella `FD`, `FA`, `FB`,
+and `FC`, respectively. The following call returns the value and all first
+partial derivatives from one convolution:
+
+```maple
+f2Vector := AppellF2(1/4,1/3,1/5,7/6,8/7,1/20,1/30,'digits'=30,'returnDerivatives'=true):
+```
+
+The standard open convergence domains used by the automatic convolution
+dispatcher are
+
+```math
+\sum_i |x_i|<1\quad(F_A),\qquad
+\max_i |x_i|<1\quad(F_B),\qquad
+\sum_i \sqrt{|x_i|}<1\quad(F_C).
+```
+
+An exact terminating parameter permits evaluation outside these domains.
+The convolution is accepted only after a degree comparison and a repeated
+working-precision comparison. Exact identical weight rows are cancelled before
+termination or pole tests; this rule includes one-variable `FB` and `FC`.
+The `FD` identity with `a=c` is applied before a lower-parameter pole test.
+Named Horn `G` and `H` series use a conservative
+interior cost test followed by a geometric-shell check, a degree comparison,
+and a working-precision comparison. The automatic `G1` dispatcher selects its
+low-rank Pfaffian connection when the two checked total-degree grids exceed a
+calibrated work threshold; `method="series"` retains the neighbor-ratio grid.
+If a numerical check fails, `"auto"` proceeds to a resource-bounded Pfaffian
+route. No Laplace, Bessel, or Mellin--Barnes formula is enabled automatically.
+
+With `returnDiagnostics=true`, a fixed-parameter call returns a record with
+the common fields `value`, `derivatives`, `methodUsed`, `degree`,
+`errorEstimate`, `elapsedSeconds`, `convergenceTest`, and `estimatedDegree`.
+The aliases `method`, `estimatedError`, `elapsedTime`, and `certificate` are
+also present. The `errorEstimate` includes an allowance for rounding the
+public value to the requested number of significant digits. A generic
+Pfaffian value does not yet carry a transport residual; its diagnostics use
+`certificate="transport_error_unknown"` and `errorEstimate=infinity` instead
+of reporting a rounding-only error. For a rank-one generic connection, first
+derivatives are reconstructed from `dF=A_i(x)F`.
+
+The file `examples/hypergeometric_fast.mpl` contains one-line Maple calls for
+generalized `pFq`, Appell `F2`, Horn `G1`, and seven-variable Lauricella `FA`.
+It can be pasted into the worksheet GUI without joining continuation lines.
 
 ### Lauricella FD dispatch
 
@@ -343,16 +440,27 @@ powershell -ExecutionPolicy Bypass -File .\run-tests.ps1 -Benchmarks
 monodromy examples. The regular runner also checks the seven-variable
 Lauricella `FD` value and derivative vector, the explicit rank-eight
 connection, exact flatness, diagonal compression, branch-cut conjugacy, and
-the automatic method. Adversarial checks include terminating parameters,
-`c=a`, exponents of size `10^40`, distinct coordinates separated by
-`10^(-40)`, cancellation that defeats a last-shell stopping rule, and Euler
-fallback.
+the automatic method. It also checks generalized `pFq`, the Appell aliases,
+all ten named Horn functions, the `FA`--`FC` convolution derivatives, exact
+axis reductions, an independent exact seven-variable `FA` polynomial, and the
+pre-Macaulay resource gate. Adversarial checks include exact upper--lower
+cancellation, an uncancelled lower pole, a terminating polynomial outside its
+nonterminating convergence domain, exact perturbations of size `10^(-100)`
+from a lower-parameter pole, a value of order `10^(-435)`, explicit path
+requests, a winding that changes `2F1(1,1;2;1/2)` by magnitude `4*Pi`,
+nonpositive exact row cancellations, preallocation termination gates, `c=a`,
+exponents of size `10^40`, distinct coordinates separated by `10^(-40)`,
+cancellation that defeats a last-shell stopping rule, and Euler fallback.
 
 The benchmark warms every applicable method and compares them at the same
 point, precision, and transport settings. It requires the automatic method to
-take at most `1.25` times the fastest applicable forced method plus `0.05`
+take at most `1.25` times the fastest applicable forced method plus `0.01`
 seconds, and it imposes a five-second upper bound on the seven-variable
-principal-germ evaluation. The old degree-40 enumeration has 62,891,499
+principal-germ evaluation. The general benchmark applies the same gate to
+generalized `pFq`, Appell `F2`, Horn `G1`, and seven-variable Lauricella `FA`.
+It records cold and warm timings separately and checks every result against a
+forced generic value when that route passes the resource gate. The old
+degree-40 enumeration has 62,891,499
 multi-indices, whereas the degree-100 grouped recurrence performs 11,500
 scalar recurrence updates including its absolute majorant. Timings depend on
 Maple and the host CPU; correctness checks use reference values and connection
@@ -387,14 +495,47 @@ working precision. An accepted comparison has
 `convergenceTest="doubled_degree"`, `tailBound=-1`, and a nonnegative
 `doubledDegreeDifference`. This comparison is a fast-mode error estimate, not
 an analytic tail bound. Failure of both checks sends `method="auto"` to the
-next applicable method. For the series, closed-form, and Pfaffian routes,
-`errorEstimate` also includes a conservative allowance for rounding the
-returned value to the requested significant digits; `roundingError` records
-that allowance together with any measured working-precision discrepancy.
+next applicable method. For the series and closed-form routes,
+`errorEstimate` includes a conservative allowance for rounding the returned
+value to the requested significant digits; `roundingError` records that
+allowance together with any measured working-precision discrepancy. The
+specialized `FD` Pfaffian route also includes its transport and differential
+residuals. Generic Pfaffian diagnostics explicitly mark the transport error as
+unknown.
 
-The Euler and Pfaffian methods retain their separate numerical checks. The
-Euler quadrature and the doubled-degree comparison are not interval
-certificates.
+The Euler and specialized `FD` Pfaffian methods retain their separate
+numerical checks. The Euler quadrature and the doubled-degree comparison are
+not interval certificates.
+
+For generalized `pFq`, the recurrence uses an absolute geometric tail bound
+after the parameter-dependent transient range and repeats the sum at a higher
+working precision. The `FA`--`FC` convolution and the named Horn grids use
+standard convergence-domain tests followed by degree and working-precision
+comparisons. These comparisons are midpoint error estimates. Failure does not
+produce a value; the automatic dispatcher selects a bounded continuation
+route or raises a resource error.
+
+For a Horn series with an exact nonpositive upper parameter and nonnegative
+weights, the evaluator derives a conservative finite-support degree whenever
+the resulting inequalities bound every coordinate. The finite degree,
+`maximumDegree`, the total grid size, and the convolution or recurrence work
+are checked before coefficient storage is allocated.
+
+Before numerical conversion, the common evaluator and the specialized
+Lauricella FD evaluator measure the exact distance of every real or complex
+parameter from the nearest nonpositive integer in the complex plane. For an
+arbitrary-precision Maple float, they first inspect the stored decimal mantissa
+at its source precision; lowering `Digits` cannot erase a real or complex
+displacement before the guard is chosen. The distance determines extra working
+digits. A convergent
+defining series is also evaluated beyond the near-pole transient degree plus a
+tail margin, so a small prefix cannot hide a later regular coefficient surge.
+If `maximumDegree` is below that range, automatic evaluation fails closed
+instead of routing the under-resolved germ into continuation. Complete sums
+are compared along a bounded precision ladder when two ordinary guard
+precisions disagree; this comparison includes values and all requested first
+derivatives. An unresolved terminating polynomial is never sent to an
+uncertified Pfaffian fallback.
 
 `mode="certified"` is reserved for a future complex-ball implementation.
 Calling it raises an explicit error; the package never silently labels a
@@ -405,6 +546,9 @@ midpoint result as certified.
 - The derivative basis is selected by a high-precision numerical Macaulay
   reduction. Resonant parameters can change the rank or basis; use an affine
   epsilon regulator or nonresonant parameters when necessary.
+- A rank-one generic connection supplies derivatives through its connection
+  matrix. For a higher-rank generic basis that omits a requested first
+  derivative, the evaluator raises an explicit unsupported-basis error.
 - Exact factorization is available when the Horn parameters and epsilon value
   are exact. With inexact parameters, the returned pivot determinant can be
   left as a single numerical factor.
@@ -431,6 +575,15 @@ midpoint result as certified.
 - Generic Horn-series enumeration stops before its cumulative work exceeds
   one million multi-indices. Specialized evaluators and Pfaffian transport are
   used instead when they are available.
+- Generic Pfaffian construction is disabled above three variables. For at
+  most three variables, the estimated seed order, column count, and dense
+  matrix cell count are checked before a Macaulay matrix is allocated. A
+  specialized connection or a convergent specialized series is required when
+  this gate fails.
+- The named Horn neighbor evaluator uses a conservative interior selector.
+  A point outside that selector requires a Pfaffian path or a user-selected
+  method. Full analytic convergence-region classifiers for all ten named Horn
+  series are not implemented.
 
 ## License and references
 
@@ -445,3 +598,8 @@ The method and benchmark examples are based on:
   [arXiv:2605.30216v2](https://arxiv.org/abs/2605.30216v2).
 - The GPL-3.0 reference implementation:
   <https://github.com/HyperPrecision/HyperPrecision>.
+- F. Johansson, *Computing hypergeometric functions rigorously*,
+  [arXiv:1606.06977](https://arxiv.org/abs/1606.06977).
+- T. Kimura, *On the convergence of multivariable hypergeometric series*,
+  Kyushu Journal of Mathematics 78 (2024), 129--153,
+  [doi:10.2206/kyushujm.78.129](https://doi.org/10.2206/kyushujm.78.129).

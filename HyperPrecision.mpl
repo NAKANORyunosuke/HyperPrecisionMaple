@@ -45,6 +45,22 @@ local
     ExtractConnectionMatrices, DerivePfaffian, ConnectionMatricesInternal,
     RisingFactorial, FallingFactorial, SeriesCoefficient,
     SeriesVector, DirectSeriesValue, BoundarySeries,
+    CancelExactSeriesParameters, NumericParameterSeries,
+    ExactNonpositiveIntegerDegree, ExactTotalTerminationDegree,
+    ExactFiniteSupportDegree,
+    GenericPfaffianCostEstimate, EnsureGenericPfaffianSafe,
+    HypergeometricRoundingAllowance, HypergeometricSeriesDegree,
+    StoredNumericDigits, HypergeometricSourceDigits,
+    HypergeometricConditioningGuardDigits, HypergeometricTransientDegree,
+    PFQExactTerminationAndPoleCheck,
+    PFQExactClosedFormVector,
+    PFQFastSeriesVector, PFQFastSeriesChecked, PFQNativeValue,
+    SmallIntegerPochhammer, HornCoefficientStep,
+    HornFastGridVector, HornFastGridChecked,
+    TruncatedConvolution, UnitCoefficientArray,
+    LauricellaConvolutionRadius, LauricellaConvolutionTerminationDegree,
+    LauricellaConvolutionVector, LauricellaConvolutionChecked,
+    ValidateLauricellaConvolutionParameters,
     Convolve, PolynomialOnLine, EquationMatrixOnLine,
     ReductionSeries, RestrictedMatrixSeries,
     RationalTaylorSeries,
@@ -85,7 +101,8 @@ local
     MakePrecisionAttemptRecord, MakeTransportDiagnosticsRecord,
     MakeMeridianMetadataRecord, MakeRelationRecord,
     MakeGeneratorBundleRecord, MakeUserPfaffianRecord,
-    MakeExactFlatnessRecord, MakeLauricellaFDEvaluationRecord;
+    MakeExactFlatnessRecord, MakeLauricellaFDEvaluationRecord,
+    MakeHypergeometricEvaluationRecord;
 
 MakeAffineRecord := proc(p1, p2)
     return Record('hpType' = "AffineParameter", 'constant' = p1, 'slope' = p2);
@@ -234,13 +251,31 @@ end proc;
 
 MakeLauricellaFDEvaluationRecord := proc(p1,p2,p3,p4,p5,p6,p7,p8,
                                         p9 := "not_applicable",p10 := -1,
-                                        p11 := -1,p12 := -1)
+                                        p11 := -1,p12 := -1,p13 := [])
     return Record('hpType'="LauricellaFDEvaluation",'value'=p1,
-        'methodUsed'=p2,'degree'=p3,'errorEstimate'=p4,
-        'elapsedSeconds'=p5,'estimatedDegree'=p6,
+        'methodUsed'=p2,'method'=p2,'degree'=p3,'errorEstimate'=p4,
+        'estimatedError'=p4,'elapsedSeconds'=p5,'elapsedTime'=p5,
+        'estimatedDegree'=p6,
         'compressedDimension'=p7,'transportFactors'=p8,
-        'convergenceTest'=p9,'tailBound'=p10,
-        'doubledDegreeDifference'=p11,'roundingError'=p12);
+        'convergenceTest'=p9,'certificate'=p9,'tailBound'=p10,
+        'doubledDegreeDifference'=p11,'roundingError'=p12,
+        'derivatives'=p13);
+end proc;
+
+MakeHypergeometricEvaluationRecord := proc(
+    p1, p2::list, p3::string, p4,
+    p5, p6, p7::string,
+    p8::string, p9::nonnegint,
+    p10 := -1, p11 := 0
+)
+    return Record('hpType'="HypergeometricEvaluation",'value'=p1,
+        'derivatives'=p2,'methodUsed'=p3,'method'=p3,
+        'degree'=p4,'errorEstimate'=p5,
+        'estimatedError'=p5,'elapsedSeconds'=p6,
+        'elapsedTime'=p6,'convergenceTest'=p7,
+        'certificate'=p7,'functionName'=p8,
+        'activeVariables'=p9,'estimatedDegree'=p10,
+        'transportFactors'=p11);
 end proc;
 
 MakeExactFlatnessRecord := proc(p1, p2, p3)
@@ -1171,11 +1206,13 @@ FindPfaffianSystem := proc(
     series,
     {epsilon := 0, digits := 50, maximumSeed := 0}
 )
-    local oldDigits, result;
+    local oldDigits, result, numeric;
     if digits < 1 then error "digits must be positive"; end if;
     oldDigits := Digits; Digits := digits + 14;
     try
-        result := DerivePfaffian(NumericSeries(series, epsilon), digits + 10,
+        numeric := NumericSeries(series,epsilon);
+        EnsureGenericPfaffianSafe(numeric,maximumSeed);
+        result := DerivePfaffian(numeric,digits+10,
             maximumSeed, ExactParameterSeries(series, epsilon));
     finally
         Digits := oldDigits;
@@ -1190,9 +1227,9 @@ FindHolonomicRank := proc(
     local system;
     system := FindPfaffianSystem(
         series,
-        'epsilon' = epsilon,
-        'digits' = digits,
-        'maximumSeed' = maximumSeed
+        parse("epsilon")=epsilon,
+        parse("digits")=digits,
+        parse("maximumSeed")=maximumSeed
     );
     return [nops(system:-basis), system:-basis];
 end proc;
@@ -1810,6 +1847,1044 @@ SeriesCoefficient := proc(series, index::list)
     end do;
     for i to nops(index) do result := result / index[i]!; end do;
     return evalf(result);
+end proc;
+
+# Cancel only identical Pochhammer factors with identical weight rows.  The
+# comparison is made before numerical conversion, so a near cancellation is
+# never promoted to an exact cancellation.
+CancelExactSeriesParameters := proc(series)
+    local upperParameters,upperWeights,lowerParameters,lowerWeights,
+          keptUpperParameters,keptUpperWeights,keptLowerParameters,
+          keptLowerWeights,usedLower,equalParameters,i,j;
+    upperParameters := series:-upperParameters;
+    upperWeights := series:-upperWeights;
+    lowerParameters := series:-lowerParameters;
+    lowerWeights := series:-lowerWeights;
+    usedLower := Array(1..nops(lowerParameters),fill=false);
+    keptUpperParameters := []; keptUpperWeights := [];
+    for i to nops(upperParameters) do
+        equalParameters := false;
+        for j to nops(lowerParameters) do
+            if usedLower[j] or not evalb(upperWeights[i]=lowerWeights[j]) then
+                next;
+            end if;
+            try
+                equalParameters := evalb(normal(upperParameters[i]-lowerParameters[j])=0);
+            catch:
+                equalParameters := evalb(upperParameters[i]=lowerParameters[j]);
+            end try;
+            if equalParameters then
+                usedLower[j] := true;
+                break;
+            end if;
+        end do;
+        if not equalParameters then
+            keptUpperParameters := [op(keptUpperParameters),upperParameters[i]];
+            keptUpperWeights := [op(keptUpperWeights),upperWeights[i]];
+        end if;
+    end do;
+    keptLowerParameters := []; keptLowerWeights := [];
+    for j to nops(lowerParameters) do
+        if not usedLower[j] then
+            keptLowerParameters := [op(keptLowerParameters),lowerParameters[j]];
+            keptLowerWeights := [op(keptLowerWeights),lowerWeights[j]];
+        end if;
+    end do;
+    return MakeNumericHornRecord(series:-name,series:-nvariables,
+        keptUpperParameters,keptUpperWeights,
+        keptLowerParameters,keptLowerWeights);
+end proc;
+
+NumericParameterSeries := proc(series)
+    return MakeNumericHornRecord(series:-name,series:-nvariables,
+        map(evalf,series:-upperParameters),series:-upperWeights,
+        map(evalf,series:-lowerParameters),series:-lowerWeights);
+end proc;
+
+ExactNonpositiveIntegerDegree := proc(value)
+    if type(value,integer) and value<=0 then return -value; end if;
+    return infinity;
+end proc;
+
+# A total-degree termination is available when an upper Pochhammer parameter
+# with the all-one weight row is an exact nonpositive integer.
+ExactTotalTerminationDegree := proc(series)
+    local degreeValue,candidate,i;
+    degreeValue := infinity;
+    for i to nops(series:-upperParameters) do
+        if andmap(value->evalb(value=1),series:-upperWeights[i]) then
+            candidate := ExactNonpositiveIntegerDegree(series:-upperParameters[i]);
+            if candidate<>infinity then degreeValue := min(degreeValue,candidate); end if;
+        end if;
+    end do;
+    return degreeValue;
+end proc;
+
+# Nonnegative upper-weight rows with exact nonpositive parameters impose
+# linear bounds on the support.  Bounding every coordinate separately gives
+# a conservative finite total degree; the all-one bound above is retained
+# when it is sharper.
+ExactFiniteSupportDegree := proc(series)
+    local degreeValue,coordinateBounds,parameterDegree,weights,
+          candidate,i,j;
+    degreeValue := ExactTotalTerminationDegree(series);
+    coordinateBounds := [seq(infinity,j=1..series:-nvariables)];
+    for i to nops(series:-upperParameters) do
+        parameterDegree := ExactNonpositiveIntegerDegree(
+            series:-upperParameters[i]);
+        if parameterDegree=infinity then next; end if;
+        weights := series:-upperWeights[i];
+        if not andmap(weight->evalb(weight>=0),weights) then next; end if;
+        if andmap(weight->evalb(weight>0),weights) then
+            degreeValue := min(degreeValue,
+                floor(parameterDegree/min(op(weights))));
+        end if;
+        for j to series:-nvariables do
+            if weights[j]>0 then
+                coordinateBounds[j] := min(coordinateBounds[j],
+                    floor(parameterDegree/weights[j]));
+            end if;
+        end do;
+    end do;
+    if andmap(bound->evalb(bound<>infinity),coordinateBounds) then
+        candidate := add(coordinateBounds[j],j=1..series:-nvariables);
+        degreeValue := min(degreeValue,candidate);
+    end if;
+    return degreeValue;
+end proc;
+
+# Estimate the final dense Macaulay matrix before constructing it.  The hard
+# gate is deliberately below the regime in which Maple can spend minutes or
+# hours materialising a reduction with no useful progress report.
+GenericPfaffianCostEstimate := proc(series,maximumSeed)
+    local base,orders,maximumBasisOrder,initialSeed,finalSeed,n,
+          columns,equations,cells,i;
+    n := series:-nvariables;
+    base := BasePDEs(series); orders := base[2];
+    maximumBasisOrder := add(max(orders[i]-1,0),i=1..nops(orders));
+    initialSeed := maximumBasisOrder+`if`(nops(convert(orders,set))=1,1,2);
+    finalSeed := `if`(maximumSeed=0,max(initialSeed+4,8),maximumSeed);
+    columns := binomial(finalSeed+n,n);
+    equations := n*binomial(finalSeed+n,n);
+    cells := columns*equations;
+    return [cells,columns,equations,initialSeed,finalSeed];
+end proc;
+
+EnsureGenericPfaffianSafe := proc(series,maximumSeed)
+    local estimate;
+    if series:-nvariables>3 then
+        error "generic Pfaffian construction is disabled above three variables; use a specialized connection or a convergent series method";
+    end if;
+    estimate := GenericPfaffianCostEstimate(series,maximumSeed);
+    if estimate[5]>12 or estimate[2]>600 or estimate[1]>3000000 then
+        error "generic Pfaffian construction exceeds the resource gate (seed %1, columns %2, estimated cells %3)",estimate[5],estimate[2],estimate[1];
+    end if;
+    return estimate;
+end proc;
+
+HypergeometricRoundingAllowance := proc(value,digits::posint)
+    return evalf[digits+4](10^(1-digits)*max(abs(value),1));
+end proc;
+
+HypergeometricSeriesDegree := proc(radius,digits::posint)
+    if radius=0 then return 8; end if;
+    if radius>=1 then return infinity; end if;
+    return max(16,ceil((digits+12)*evalf(ln(10))/(-evalf(ln(radius)))+12));
+end proc;
+
+# Maple floats retain a decimal mantissa whose precision can exceed the
+# current Digits setting.  Inspect that stored mantissa before performing any
+# arithmetic, since lowering Digits first can erase a small displacement from
+# a nearby integer even though the input float still contains it.
+StoredNumericDigits := proc(value)
+    local result,realPart,imaginaryPart;
+    result := 0;
+    try
+        if type(value,float) then
+            return length(op(1,value));
+        end if;
+        if type(value,numeric) or type(value,complex) then
+            realPart := Re(value); imaginaryPart := Im(value);
+            if type(realPart,float) then
+                result := max(result,length(op(1,realPart)));
+            end if;
+            if type(imaginaryPart,float) then
+                result := max(result,length(op(1,imaginaryPart)));
+            end if;
+        end if;
+    catch:
+        return result;
+    end try;
+    return result;
+end proc;
+
+HypergeometricSourceDigits := proc(series,target::list,waypoints::list,epsilon)
+    local result,parameterValue,value,point;
+    result := StoredNumericDigits(epsilon);
+    for parameterValue in
+        [op(series:-upperParameters),op(series:-lowerParameters)] do
+        result := max(result,
+            StoredNumericDigits(parameterValue:-constant),
+            StoredNumericDigits(parameterValue:-slope));
+    end do;
+    for value in target do
+        result := max(result,StoredNumericDigits(value));
+    end do;
+    for point in waypoints do
+        for value in point do
+            result := max(result,StoredNumericDigits(value));
+        end do;
+    end do;
+    return result;
+end proc;
+
+# Preserve exact perturbations of nonpositive integral parameters throughout
+# every numerical kernel.  A lower parameter such as -100+10^(-100) is
+# regular, but evaluating it at ordinary guard precision rounds it onto a
+# pole and can also hide the coefficient surge immediately after degree 100.
+HypergeometricConditioningGuardDigits := proc(series,target::list)
+    local oldDigits,parameterMagnitude,magnitudeGuard,separationGuard,
+          parameterValue,nearestInteger,candidate,ratio,scale,i,j,
+          guardDigits;
+    oldDigits := Digits; Digits := max(oldDigits,30);
+    magnitudeGuard := 0; separationGuard := 0;
+    try
+        parameterMagnitude := add(abs(evalf(parameterValue)),parameterValue in
+            [op(series:-upperParameters),op(series:-lowerParameters)]);
+        if IsFiniteNumber(parameterMagnitude) and parameterMagnitude>1 then
+            magnitudeGuard := ceil(evalf(ln(parameterMagnitude)/ln(10)));
+        end if;
+        for parameterValue in
+            [op(series:-upperParameters),op(series:-lowerParameters)] do
+            # Use the Euclidean complex distance to the nearest integer on the
+            # nonpositive real axis.  Testing Im(parameterValue)=0 first loses
+            # a diagonal perturbation such as -2+10^(-80)+I*10^(-80): at low
+            # precision its real displacement rounds away while the imaginary
+            # displacement remains, changing the phase of the pole residue.
+            nearestInteger := round(Re(parameterValue));
+            candidate := parameterValue-nearestInteger;
+            if nearestInteger<=0 and not evalb(candidate=0) then
+                ratio := evalf(max(1,abs(parameterValue))/abs(candidate));
+                if IsFiniteNumber(ratio) and ratio>1 then
+                    separationGuard := max(separationGuard,
+                        ceil(evalf(ln(ratio)/ln(10))));
+                end if;
+            end if;
+        end do;
+        if nops(target)>0 then
+            scale := max(1,seq(abs(evalf(target[i])),i=1..nops(target)));
+            for i to nops(target) do
+                candidate := 1-target[i];
+                if not evalb(candidate=0) then
+                    ratio := evalf(scale/abs(candidate));
+                    if IsFiniteNumber(ratio) and ratio>1 then
+                        separationGuard := max(separationGuard,
+                            ceil(evalf(ln(ratio)/ln(10))));
+                    end if;
+                end if;
+                for j from i+1 to nops(target) do
+                    candidate := target[i]-target[j];
+                    if not evalb(candidate=0) then
+                        ratio := evalf(scale/abs(candidate));
+                        if IsFiniteNumber(ratio) and ratio>1 then
+                            separationGuard := max(separationGuard,
+                                ceil(evalf(ln(ratio)/ln(10))));
+                        end if;
+                    end if;
+                end do;
+            end do;
+        end if;
+    catch:
+        magnitudeGuard := max(magnitudeGuard,0);
+        separationGuard := max(separationGuard,0);
+    finally
+        Digits := oldDigits;
+    end try;
+    guardDigits := magnitudeGuard+separationGuard;
+    if guardDigits>4096 then
+        error "the hypergeometric conditioning guard exceeds 4096 digits";
+    end if;
+    return max(0,guardDigits);
+end proc;
+
+# A convergent series must be evaluated beyond a nearby lower-parameter pole;
+# otherwise a small prefix can precede a large regular coefficient.  The
+# returned total degree is conservative for every positive weight row.
+HypergeometricTransientDegree := proc(series)
+    local transientDegree,parameterValue,nearestInteger,candidate,
+          candidateMagnitude,maximumWeight,i,j;
+    transientDegree := 0;
+    for i to nops(series:-lowerParameters) do
+        parameterValue := series:-lowerParameters[i];
+        try
+            nearestInteger := round(Re(parameterValue));
+            candidate := parameterValue-nearestInteger;
+            candidateMagnitude := evalf(abs(candidate));
+            if nearestInteger>0 or evalb(candidate=0) or
+               not IsFiniteNumber(candidateMagnitude) or
+               candidateMagnitude>=1/10 then next; end if;
+            maximumWeight := max(0,seq(series:-lowerWeights[i][j],
+                j=1..series:-nvariables));
+            if maximumWeight>0 then
+                transientDegree := max(transientDegree,
+                    ceil((1-nearestInteger)/maximumWeight));
+            end if;
+        catch:
+            next;
+        end try;
+    end do;
+    return transientDegree;
+end proc;
+
+# Exact polynomial identities avoid catastrophic binomial cancellation.  The
+# first case is 1F0(-n;;z)=(1-z)^n.  The second is Chu--Vandermonde for a
+# terminating Gauss function at z=1.  Both derivatives are evaluated from
+# their exact finite products, without a parameter quotient of the form 0/0.
+PFQExactClosedFormVector := proc(exactSeries,z)
+    local upper,lower,values,n,terminatingIndex,other,c,numerator,
+          denominator,derivativeNumerator,derivativeDenominator,k;
+    upper := exactSeries:-upperParameters;
+    lower := exactSeries:-lowerParameters;
+    values := Vector(2,datatype=anything);
+    if nops(upper)=1 and nops(lower)=0 and
+       type(upper[1],integer) and upper[1]<=0 then
+        n := -upper[1];
+        values[1] := evalf((1-z)^n);
+        values[2] := `if`(n=0,0,evalf(-n*(1-z)^(n-1)));
+        return [true,values,"exact_binomial"];
+    end if;
+    if nops(upper)<>2 or nops(lower)<>1 or not evalb(z=1) then
+        return [false,Vector(0,datatype=anything),"not_applicable"];
+    end if;
+    terminatingIndex := 0;
+    if type(upper[1],integer) and upper[1]<=0 then terminatingIndex := 1;
+    elif type(upper[2],integer) and upper[2]<=0 then terminatingIndex := 2;
+    end if;
+    if terminatingIndex=0 then
+        return [false,Vector(0,datatype=anything),"not_applicable"];
+    end if;
+    n := -upper[terminatingIndex];
+    other := upper[3-terminatingIndex]; c := lower[1];
+    numerator := 1; denominator := 1;
+    for k from 0 to n-1 do
+        numerator := numerator*(c-other+k);
+        denominator := denominator*(c+k);
+    end do;
+    if evalb(denominator=0) then
+        error "Chu--Vandermonde encountered an uncancelled singular lower parameter";
+    end if;
+    values[1] := evalf(numerator/denominator);
+    if n=0 then
+        values[2] := 0;
+    else
+        derivativeNumerator := 1; derivativeDenominator := 1;
+        for k from 0 to n-2 do
+            derivativeNumerator := derivativeNumerator*(c-other+k);
+            derivativeDenominator := derivativeDenominator*(c+1+k);
+        end do;
+        values[2] := evalf(upper[terminatingIndex]*other/c*
+            derivativeNumerator/derivativeDenominator);
+    end if;
+    return [true,values,"chu_vandermonde"];
+end proc;
+
+# O(D p) recurrence for the generalized pF(p-1) series.  The derivative is
+# accumulated from the same terms, including at z=0 where division by z would
+# be invalid.
+PFQFastSeriesVector := proc(series,z,digits::posint,maximumDegree::nonnegint,
+                            terminationDegree)
+    local values,term,derivativeValue,coefficientRatio,derivativeTerm,
+          degree,parameter,rhoScalar,rhoDerivative,tailEstimate,
+          parameterMagnitude,valueNorm,tolerance;
+    values := Vector(2,datatype=anything); values[1] := 1; values[2] := 0;
+    if terminationDegree=0 then return [values,true,0,0]; end if;
+    if z=0 then
+        coefficientRatio := 1;
+        for parameter in series:-upperParameters do coefficientRatio := coefficientRatio*parameter; end do;
+        for parameter in series:-lowerParameters do
+            if evalb(parameter=0) then error "the generalized hypergeometric series has a singular lower parameter"; end if;
+            coefficientRatio := coefficientRatio/parameter;
+        end do;
+        values[2] := evalf(coefficientRatio);
+        return [values,true,0,0];
+    end if;
+    term := 1; derivativeValue := 0; tailEstimate := infinity;
+    tolerance := evalf(10^(-(digits+6)));
+    parameterMagnitude := max(1,seq(abs(parameter),parameter in
+        [op(series:-upperParameters),op(series:-lowerParameters)]));
+    for degree to maximumDegree do
+        coefficientRatio := 1/degree;
+        for parameter in series:-upperParameters do
+            coefficientRatio := coefficientRatio*(parameter+degree-1);
+        end do;
+        for parameter in series:-lowerParameters do
+            if evalb(parameter+degree-1=0) then
+                error "the generalized hypergeometric series has a singular lower parameter at degree %1",degree;
+            end if;
+            coefficientRatio := coefficientRatio/(parameter+degree-1);
+        end do;
+        derivativeTerm := evalf(term*degree*coefficientRatio);
+        term := evalf(term*z*coefficientRatio);
+        derivativeValue := evalf(derivativeValue+derivativeTerm);
+        values[1] := evalf(values[1]+term); values[2] := derivativeValue;
+        if not IsFiniteNumber(term) or not IsFiniteNumber(derivativeValue) or
+           not IsFiniteNumber(values[1]) then
+            return [values,false,degree,infinity];
+        end if;
+        if terminationDegree<>infinity and degree>=terminationDegree then
+            return [values,true,degree,0];
+        end if;
+        if degree>parameterMagnitude+4 and degree>=8 then
+            rhoScalar := abs(z);
+            for parameter in series:-upperParameters do
+                rhoScalar := rhoScalar*(degree+abs(parameter));
+            end do;
+            for parameter in series:-lowerParameters do
+                rhoScalar := rhoScalar/max(degree-abs(parameter),1/10);
+            end do;
+            rhoScalar := evalf(rhoScalar/(degree+1));
+            rhoDerivative := evalf(rhoScalar*(degree+1)/degree);
+            if rhoDerivative<1 then
+                tailEstimate := evalf(max(abs(term),abs(derivativeTerm))*
+                    rhoDerivative/(1-rhoDerivative));
+                valueNorm := max(abs(values[1]),abs(values[2]),1);
+                if tailEstimate<=tolerance*valueNorm then
+                    return [values,true,degree,tailEstimate];
+                end if;
+            end if;
+        end if;
+    end do;
+    return [values,false,maximumDegree,tailEstimate];
+end proc;
+
+PFQExactTerminationAndPoleCheck := proc(exactSeries)
+    local terminationDegree,lowerPole,parameter;
+    terminationDegree := ExactTotalTerminationDegree(exactSeries);
+    lowerPole := infinity;
+    for parameter in exactSeries:-lowerParameters do
+        if type(parameter,integer) and parameter<=0 then
+            lowerPole := min(lowerPole,1-parameter);
+        end if;
+    end do;
+    if lowerPole<>infinity and
+       (terminationDegree=infinity or terminationDegree>=lowerPole) then
+        error "the generalized hypergeometric series has an uncancelled singular lower parameter";
+    end if;
+    return terminationDegree;
+end proc;
+
+PFQFastSeriesChecked := proc(exactSeries,z,digits::posint,
+                             maximumDegree::posint)
+    local terminationDegree,effectiveDegree,
+          oldDigits,lower,current,previous,discrepancy,tolerance,i,guardDigits,
+          operationCount,precisionOffsets,attempt,workingPrecision,stable,
+          certificate,precisionRerun;
+    terminationDegree := PFQExactTerminationAndPoleCheck(exactSeries);
+    if terminationDegree<>infinity and terminationDegree>maximumDegree then
+        error "the terminating generalized hypergeometric series needs degree %1, above maximumDegree=%2",terminationDegree,maximumDegree;
+    end if;
+    effectiveDegree := `if`(terminationDegree=infinity,maximumDegree,terminationDegree);
+    operationCount := (effectiveDegree+1)*
+        (nops(exactSeries:-upperParameters)+
+         nops(exactSeries:-lowerParameters)+4);
+    if operationCount>20000000 then
+        error "the generalized hypergeometric recurrence exceeds its twenty-million-operation resource gate";
+    end if;
+    guardDigits := HypergeometricConditioningGuardDigits(exactSeries,[z]);
+    oldDigits := Digits; tolerance := evalf(10^(-(digits+3)));
+    precisionOffsets := [14,24,56,120,248,504,1016,2040,4088];
+    stable := false; attempt := 2; precisionRerun := false;
+    try
+        Digits := digits+guardDigits+precisionOffsets[1];
+        lower := PFQFastSeriesVector(NumericParameterSeries(exactSeries),
+            evalf(z),digits,effectiveDegree,terminationDegree);
+        previous := lower;
+        Digits := digits+guardDigits+precisionOffsets[2];
+        current := PFQFastSeriesVector(NumericParameterSeries(exactSeries),
+            evalf(z),digits,effectiveDegree,terminationDegree);
+        workingPrecision := digits+guardDigits+precisionOffsets[2];
+        discrepancy := max(seq(abs(current[1][i]-lower[1][i]),i=1..2));
+        if current[2] and lower[2] and discrepancy<=tolerance*
+           max(seq(abs(current[1][i]),i=1..2),1) then
+            stable := true;
+        end if;
+        # Exact finite sums and large opposing parameters can lose hundreds of
+        # digits even though both ordinary guard precisions are finite.  Raise
+        # precision until two independently rounded complete sums agree.  The
+        # finite ladder is capped, so an unresolved computation still fails
+        # closed instead of falling through to an uncertified continuation.
+        for attempt from 3 to nops(precisionOffsets) while not stable do
+            if not current[2] then break; end if;
+            precisionRerun := true;
+            previous := current;
+            Digits := digits+guardDigits+precisionOffsets[attempt];
+            workingPrecision := Digits;
+            current := PFQFastSeriesVector(NumericParameterSeries(exactSeries),
+                evalf(z),digits,effectiveDegree,terminationDegree);
+            discrepancy := max(seq(abs(current[1][i]-previous[1][i]),i=1..2));
+            if current[2] and previous[2] and discrepancy<=tolerance*
+               max(seq(abs(current[1][i]),i=1..2),1) then
+                stable := true;
+            end if;
+        end do;
+    finally
+        Digits := oldDigits;
+    end try;
+    if stable then
+        certificate := `if`(terminationDegree=infinity,
+            `if`(not precisionRerun,"majorant","majorant_and_precision_rerun"),
+            `if`(not precisionRerun,"exact_termination",
+                "precision_rerun_exact_termination"));
+        return [current[1],true,current[3],max(current[4],discrepancy),
+            discrepancy,workingPrecision,certificate];
+    end if;
+    return [current[1],false,current[3],current[4],discrepancy,
+        workingPrecision,"precision_unstable"];
+end proc;
+
+PFQNativeValue := proc(exactSeries,z,digits::posint)
+    local upper,lower,value,derivativeValue,prefactor,parameter;
+    upper := exactSeries:-upperParameters; lower := exactSeries:-lowerParameters;
+    value := evalf[digits+8](hypergeom(upper,lower,z));
+    prefactor := mul(parameter,parameter in upper)/
+        mul(parameter,parameter in lower);
+    derivativeValue := evalf[digits+8](prefactor*
+        hypergeom(map(parameter->parameter+1,upper),
+                  map(parameter->parameter+1,lower),z));
+    if not IsFiniteNumber(value) or not IsFiniteNumber(derivativeValue) then
+        error "Maple's native hypergeometric evaluator did not return a finite value";
+    end if;
+    return Vector([value,derivativeValue],datatype=anything);
+end proc;
+
+# Compute c_(m+e_j)/c_m directly from the Pochhammer shifts.  This neighbor
+# recurrence supports the negative weights occurring in Horn's G and H
+# families and avoids recomputing every Pochhammer product from the origin.
+SmallIntegerPochhammer := proc(base,shift::integer)
+    if shift=0 then return 1;
+    elif shift=1 then return base;
+    elif shift=2 then return base*(base+1);
+    elif shift=-1 then return 1/(base-1);
+    elif shift=-2 then return 1/((base-1)*(base-2));
+    end if;
+    return RisingFactorial(base,shift);
+end proc;
+
+HornCoefficientStep := proc(series,previousIndex::list,variable::posint)
+    local ratio,parameter,weights,shift,i;
+    ratio := 1/(previousIndex[variable]+1);
+    for i to nops(series:-upperParameters) do
+        parameter := series:-upperParameters[i]; weights := series:-upperWeights[i];
+        shift := weights[variable];
+        ratio := ratio*SmallIntegerPochhammer(
+            parameter+WeightDot(weights,previousIndex),shift);
+    end do;
+    for i to nops(series:-lowerParameters) do
+        parameter := series:-lowerParameters[i]; weights := series:-lowerWeights[i];
+        shift := weights[variable];
+        ratio := ratio/SmallIntegerPochhammer(
+            parameter+WeightDot(weights,previousIndex),shift);
+    end do;
+    return evalf(ratio);
+end proc;
+
+HornFastGridVector := proc(series,target::list,digits::posint,
+                           maximumDegree::nonnegint,terminationDegree,
+                           computeDerivatives::boolean := true,
+                           checkpointDegree := -1)
+    local n,coefficients,values,zero,index,previousIndex,coefficient,
+          candidate,ratio,term,derivativeTerm,shellNorm,previousShell,
+          shellRatios,rho,tailEstimate,valueNorm,tolerance,degree,
+          variable,found,i,checkpointValues,checkpointCaptured;
+    n := series:-nvariables;
+    if binomial(maximumDegree+n,n)>2000000 then
+        error "the neighbor-ratio series exceeds its two-million-term resource gate";
+    end if;
+    coefficients := table(); zero := ZeroIndex(n); coefficients[zero] := 1;
+    values := Vector(n+1,datatype=anything); values[1] := 1;
+    checkpointValues := Vector(n+1,datatype=anything);
+    checkpointCaptured := false;
+    if checkpointDegree=0 then
+        checkpointValues := map(entry->entry,values); checkpointCaptured := true;
+    end if;
+    previousShell := 0; shellRatios := []; tailEstimate := infinity;
+    tolerance := evalf(10^(-(digits+6)));
+    if maximumDegree=0 then
+        return [values,evalb(terminationDegree=0),0,
+            `if`(terminationDegree=0,0,infinity),values];
+    end if;
+    for degree to maximumDegree do
+        shellNorm := 0;
+        for index in Compositions(degree,n) do
+            found := false; coefficient := 0;
+            for variable to n do
+                if index[variable]=0 then next; end if;
+                previousIndex := subsop(variable=index[variable]-1,index);
+                if not assigned(coefficients[previousIndex]) then next; end if;
+                try
+                    ratio := HornCoefficientStep(series,previousIndex,variable);
+                    candidate := evalf(coefficients[previousIndex]*ratio);
+                    if IsFiniteNumber(candidate) then
+                        coefficient := candidate; found := true; break;
+                    end if;
+                catch:
+                    found := false;
+                end try;
+            end do;
+            if not found then
+                try
+                    coefficient := SeriesCoefficient(series,index);
+                    found := IsFiniteNumber(coefficient);
+                catch:
+                    found := false;
+                end try;
+            end if;
+            if not found then return [values,false,degree,infinity,values]; end if;
+            coefficients[index] := coefficient;
+            term := coefficient;
+            for variable to n do
+                if index[variable]<>0 then
+                    term := term*target[variable]^index[variable];
+                end if;
+            end do;
+            term := evalf(term); values[1] := evalf(values[1]+term);
+            shellNorm := shellNorm+abs(term);
+            if computeDerivatives then
+                for variable to n do
+                    if index[variable]=0 then next; end if;
+                    derivativeTerm := coefficient*index[variable];
+                    for i to n do
+                        if index[i]-`if`(i=variable,1,0)<>0 then
+                            derivativeTerm := derivativeTerm*
+                                target[i]^(index[i]-`if`(i=variable,1,0));
+                        end if;
+                    end do;
+                    derivativeTerm := evalf(derivativeTerm);
+                    values[variable+1] := evalf(values[variable+1]+derivativeTerm);
+                    shellNorm := shellNorm+abs(derivativeTerm);
+                end do;
+            end if;
+        end do;
+        if degree=checkpointDegree then
+            checkpointValues := map(entry->entry,values); checkpointCaptured := true;
+        end if;
+        if not andmap(IsFiniteNumber,[seq(values[i],i=1..n+1)]) then
+            return [values,false,degree,infinity,
+                `if`(checkpointCaptured,checkpointValues,values)];
+        end if;
+        if terminationDegree<>infinity and degree>=terminationDegree then
+            return [values,true,degree,0,
+                `if`(checkpointCaptured,checkpointValues,values)];
+        end if;
+        if previousShell>0 then
+            shellRatios := [op(shellRatios),evalf(shellNorm/previousShell)];
+            if nops(shellRatios)>8 then shellRatios := shellRatios[2..-1]; end if;
+        end if;
+        previousShell := shellNorm;
+    end do;
+    if nops(shellRatios)>=6 then
+        rho := evalf(6/5*max(op(shellRatios)));
+        if rho<1 then
+            tailEstimate := evalf(previousShell*rho/(1-rho));
+            valueNorm := max(seq(abs(values[i]),i=1..n+1),1);
+            if maximumDegree>=16 and tailEstimate<=tolerance*valueNorm then
+                return [values,true,maximumDegree,tailEstimate,
+                    `if`(checkpointCaptured,checkpointValues,values)];
+            end if;
+        end if;
+    end if;
+    return [values,false,maximumDegree,tailEstimate,
+        `if`(checkpointCaptured,checkpointValues,values)];
+end proc;
+
+HornFastGridChecked := proc(exactSeries,target::list,digits::posint,
+                            maximumDegree::posint,comparisonDegree := -1,
+                            computeDerivatives::boolean := true)
+    local terminationDegree,effectiveDegree,lowerDegree,oldDigits,
+          current,previous,lowerPrecision,degreeDifference,precisionDifference,
+          tolerance,valueNorm,n,i,numberOfComponents,guardDigits,
+          precisionOffsets,attempt,workingPrecision,precisionStable,
+          precisionRerun;
+    n := exactSeries:-nvariables;
+    terminationDegree := ExactFiniteSupportDegree(exactSeries);
+    if terminationDegree<>infinity and terminationDegree>maximumDegree then
+        error "the terminating Horn series needs degree %1, above maximumDegree=%2",terminationDegree,maximumDegree;
+    end if;
+    effectiveDegree := `if`(terminationDegree=infinity,maximumDegree,terminationDegree);
+    if binomial(effectiveDegree+n,n)>2000000 then
+        error "the neighbor-ratio series exceeds its two-million-term resource gate";
+    end if;
+    lowerDegree := `if`(terminationDegree=infinity,
+        `if`(comparisonDegree<0,max(8,floor(effectiveDegree/2)),comparisonDegree),
+        effectiveDegree);
+    if terminationDegree=infinity and lowerDegree+8>effectiveDegree then
+        return [Vector(n+1,datatype=anything),false,effectiveDegree,
+            infinity,infinity,infinity,digits,"insufficient_degree"];
+    end if;
+    numberOfComponents := `if`(computeDerivatives,n+1,1);
+    guardDigits := HypergeometricConditioningGuardDigits(exactSeries,target);
+    oldDigits := Digits; tolerance := evalf(10^(-(digits+3)));
+    precisionOffsets := [14,24,56,120,248,504,1016,2040,4088];
+    precisionStable := false; attempt := 2; precisionRerun := false;
+    try
+        Digits := digits+guardDigits+precisionOffsets[1];
+        lowerPrecision := HornFastGridVector(NumericParameterSeries(exactSeries),
+            map(evalf,target),digits,lowerDegree,terminationDegree,
+            computeDerivatives,lowerDegree);
+        Digits := digits+guardDigits+precisionOffsets[2];
+        current := HornFastGridVector(NumericParameterSeries(exactSeries),
+            map(evalf,target),digits,effectiveDegree,terminationDegree,
+            computeDerivatives,lowerDegree);
+        workingPrecision := Digits;
+        degreeDifference := max(seq(abs(current[1][i]-current[5][i]),
+            i=1..numberOfComponents));
+        precisionDifference := max(seq(
+            abs(current[5][i]-lowerPrecision[1][i]),i=1..numberOfComponents));
+        valueNorm := max(seq(abs(current[1][i]),i=1..numberOfComponents),1);
+        precisionStable := evalb(current[2] and lowerPrecision[2] and
+            precisionDifference<=tolerance*valueNorm and
+            (terminationDegree<>infinity or
+             degreeDifference<=tolerance*valueNorm));
+        # If the initial comparison fails, compare complete grids at a precision
+        # ladder.  This catches cancellation that appears after the checkpoint,
+        # while a stable full-grid comparison followed by a persistent degree
+        # discrepancy remains an honest truncation failure.
+        for attempt from 3 to nops(precisionOffsets) while not precisionStable do
+            if not current[2] then break; end if;
+            precisionRerun := true;
+            previous := current;
+            Digits := digits+guardDigits+precisionOffsets[attempt];
+            workingPrecision := Digits;
+            current := HornFastGridVector(NumericParameterSeries(exactSeries),
+                map(evalf,target),digits,effectiveDegree,terminationDegree,
+                computeDerivatives,lowerDegree);
+            precisionDifference := max(seq(abs(current[1][i]-previous[1][i]),
+                i=1..numberOfComponents));
+            degreeDifference := max(seq(abs(current[1][i]-current[5][i]),
+                i=1..numberOfComponents));
+            valueNorm := max(seq(abs(current[1][i]),i=1..numberOfComponents),1);
+            if current[2] and previous[2] and
+               precisionDifference<=tolerance*valueNorm then
+                precisionStable := true;
+            end if;
+        end do;
+    finally
+        Digits := oldDigits;
+    end try;
+    valueNorm := max(seq(abs(current[1][i]),i=1..numberOfComponents),1);
+    if precisionStable and current[2] and
+       (terminationDegree<>infinity or degreeDifference<=tolerance*valueNorm) then
+        return [current[1],true,current[3],
+            max(current[4],degreeDifference,precisionDifference),
+            degreeDifference,precisionDifference,workingPrecision,
+            `if`(terminationDegree=infinity,
+                `if`(not precisionRerun,"geometric_shell_and_doubled_degree",
+                    "geometric_shell_doubled_degree_and_precision_rerun"),
+                `if`(not precisionRerun,"exact_termination",
+                    "precision_rerun_exact_termination"))];
+    end if;
+    return [current[1],false,current[3],
+        max(current[4],degreeDifference,precisionDifference),
+        degreeDifference,precisionDifference,workingPrecision,
+        `if`(precisionStable,"failed","precision_unstable")];
+end proc;
+
+UnitCoefficientArray := proc(maximumDegree::nonnegint)
+    local result;
+    result := Array(0..maximumDegree,fill=0); result[0] := 1;
+    return result;
+end proc;
+
+TruncatedConvolution := proc(left,right,maximumDegree::nonnegint)
+    local result,i,j;
+    result := Array(0..maximumDegree,fill=0);
+    for i from 0 to maximumDegree do
+        if left[i]=0 then next; end if;
+        for j from 0 to maximumDegree-i do
+            if right[j]<>0 then result[i+j] := result[i+j]+left[i]*right[j]; end if;
+        end do;
+    end do;
+    return result;
+end proc;
+
+LauricellaConvolutionRadius := proc(familyName::string,target::list)
+    local name,value;
+    name := StringTools:-LowerCase(familyName);
+    if member(name,["lauricellafa","appellf2"]) then
+        return evalf(add(abs(value),value in target));
+    elif member(name,["lauricellafb","appellf3"]) then
+        return evalf(max(seq(abs(value),value in target)));
+    elif member(name,["lauricellafc","appellf4"]) then
+        return evalf(add(sqrt(abs(value)),value in target));
+    end if;
+    error "the family does not have a Lauricella convolution kernel";
+end proc;
+
+LauricellaConvolutionTerminationDegree := proc(series)
+    local name,n,degreeValue,candidate,i,firstDegree,secondDegree,
+          allTerminating;
+    name := StringTools:-LowerCase(series:-name); n := series:-nvariables;
+    degreeValue := infinity;
+    if member(name,["lauricellafa","appellf2"]) then
+        degreeValue := ExactNonpositiveIntegerDegree(series:-upperParameters[1]);
+        allTerminating := true; candidate := 0;
+        for i to n do
+            if evalb(series:-upperParameters[i+1]=series:-lowerParameters[i]) then
+                allTerminating := false; break;
+            end if;
+            firstDegree := ExactNonpositiveIntegerDegree(series:-upperParameters[i+1]);
+            if firstDegree=infinity then allTerminating := false; break; end if;
+            candidate := candidate+firstDegree;
+        end do;
+        if allTerminating then degreeValue := min(degreeValue,candidate); end if;
+    elif member(name,["lauricellafb","appellf3"]) then
+        allTerminating := true; candidate := 0;
+        for i to n do
+            firstDegree := ExactNonpositiveIntegerDegree(series:-upperParameters[i]);
+            secondDegree := ExactNonpositiveIntegerDegree(series:-upperParameters[n+i]);
+            if firstDegree=infinity and secondDegree=infinity then
+                allTerminating := false; break;
+            end if;
+            candidate := candidate+min(firstDegree,secondDegree);
+        end do;
+        if allTerminating then degreeValue := candidate; end if;
+    elif member(name,["lauricellafc","appellf4"]) then
+        firstDegree := ExactNonpositiveIntegerDegree(series:-upperParameters[1]);
+        secondDegree := ExactNonpositiveIntegerDegree(series:-upperParameters[2]);
+        degreeValue := min(firstDegree,secondDegree);
+    end if;
+    return degreeValue;
+end proc;
+
+ValidateLauricellaConvolutionParameters := proc(series,terminationDegree)
+    local name,n,parameter,poleDegree,numeratorDegree,i;
+    name := StringTools:-LowerCase(series:-name); n := series:-nvariables;
+    if member(name,["lauricellafa","appellf2"]) then
+        for i to n do
+            parameter := series:-lowerParameters[i];
+            if type(parameter,integer) and parameter<=0 and
+               not evalb(series:-upperParameters[i+1]=parameter) then
+                poleDegree := 1-parameter;
+                numeratorDegree := ExactNonpositiveIntegerDegree(
+                    series:-upperParameters[i+1]);
+                if min(terminationDegree,numeratorDegree)>=poleDegree then
+                    error "the Lauricella FA series has an uncancelled singular lower parameter in variable %1",i;
+                end if;
+            end if;
+        end do;
+    elif member(name,["lauricellafb","appellf3"]) then
+        parameter := series:-lowerParameters[1];
+        if type(parameter,integer) and parameter<=0 and
+           terminationDegree>=1-parameter then
+            error "the Lauricella FB series has an uncancelled singular lower parameter";
+        end if;
+    elif member(name,["lauricellafc","appellf4"]) then
+        for i to n do
+            parameter := series:-lowerParameters[i];
+            if type(parameter,integer) and parameter<=0 and
+               terminationDegree>=1-parameter then
+                error "the Lauricella FC series has an uncancelled singular lower parameter in variable %1",i;
+            end if;
+        end do;
+    end if;
+    return true;
+end proc;
+
+# The FA, FB, and FC coefficients factor into one-variable sequences followed
+# by a single total-degree Pochhammer factor.  Prefix and suffix convolutions
+# provide the value and every first derivative in O(n D^2) operations.
+LauricellaConvolutionVector := proc(series,target::list,
+                                   maximumDegree::nonnegint)
+    local name,n,individual,derivativeIndividual,prefix,suffix,
+          baseSequence,derivativeSequence,productSequence,
+          derivativeProduct,temporary,outerWeights,values,a,b,c,
+          av,bv,cv,ratio,derivativeRatio,cancelled,degree,i,k;
+    name := StringTools:-LowerCase(series:-name); n := series:-nvariables;
+    individual := Array(1..n); derivativeIndividual := Array(1..n);
+    for i to n do
+        baseSequence := Array(0..maximumDegree,fill=0);
+        derivativeSequence := Array(0..maximumDegree,fill=0);
+        baseSequence[0] := 1;
+        if member(name,["lauricellafa","appellf2"]) then
+            bv := series:-upperParameters[i+1]; cv := series:-lowerParameters[i];
+            cancelled := evalb(bv=cv);
+            derivativeSequence[0] := `if`(cancelled,1,bv/cv);
+            for degree to maximumDegree do
+                ratio := `if`(cancelled,1,(bv+degree-1)/(cv+degree-1));
+                baseSequence[degree] := evalf(baseSequence[degree-1]*
+                    ratio*target[i]/degree);
+                derivativeRatio := `if`(cancelled,1,(bv+degree)/(cv+degree));
+                derivativeSequence[degree] := evalf(derivativeSequence[degree-1]*
+                    derivativeRatio*target[i]/degree);
+            end do;
+        elif member(name,["lauricellafb","appellf3"]) then
+            av := series:-upperParameters[i]; bv := series:-upperParameters[n+i];
+            derivativeSequence[0] := av*bv;
+            for degree to maximumDegree do
+                baseSequence[degree] := evalf(baseSequence[degree-1]*
+                    (av+degree-1)*(bv+degree-1)*target[i]/degree);
+                derivativeSequence[degree] := evalf(derivativeSequence[degree-1]*
+                    (av+degree)*(bv+degree)*target[i]/degree);
+            end do;
+        else
+            cv := series:-lowerParameters[i]; derivativeSequence[0] := 1/cv;
+            for degree to maximumDegree do
+                baseSequence[degree] := evalf(baseSequence[degree-1]*
+                    target[i]/((cv+degree-1)*degree));
+                derivativeSequence[degree] := evalf(derivativeSequence[degree-1]*
+                    target[i]/((cv+degree)*degree));
+            end do;
+        end if;
+        individual[i] := baseSequence; derivativeIndividual[i] := derivativeSequence;
+    end do;
+    prefix := Array(0..n); suffix := Array(1..n+1);
+    prefix[0] := UnitCoefficientArray(maximumDegree);
+    for i to n do
+        prefix[i] := TruncatedConvolution(prefix[i-1],individual[i],maximumDegree);
+    end do;
+    suffix[n+1] := UnitCoefficientArray(maximumDegree);
+    for i from n by -1 to 1 do
+        suffix[i] := TruncatedConvolution(individual[i],suffix[i+1],maximumDegree);
+    end do;
+    productSequence := prefix[n];
+    outerWeights := Array(0..maximumDegree+1,fill=0); outerWeights[0] := 1;
+    if member(name,["lauricellafa","appellf2"]) then
+        a := series:-upperParameters[1];
+        for degree to maximumDegree+1 do
+            outerWeights[degree] := evalf(outerWeights[degree-1]*(a+degree-1));
+        end do;
+    elif member(name,["lauricellafb","appellf3"]) then
+        c := series:-lowerParameters[1];
+        for degree to maximumDegree+1 do
+            outerWeights[degree] := evalf(outerWeights[degree-1]/(c+degree-1));
+        end do;
+    else
+        a := series:-upperParameters[1]; b := series:-upperParameters[2];
+        for degree to maximumDegree+1 do
+            outerWeights[degree] := evalf(outerWeights[degree-1]*
+                (a+degree-1)*(b+degree-1));
+        end do;
+    end if;
+    values := Vector(n+1,datatype=anything);
+    values[1] := evalf(add(outerWeights[degree]*productSequence[degree],
+        degree=0..maximumDegree));
+    for i to n do
+        temporary := TruncatedConvolution(prefix[i-1],
+            derivativeIndividual[i],maximumDegree);
+        derivativeProduct := TruncatedConvolution(temporary,suffix[i+1],maximumDegree);
+        values[i+1] := evalf(add(outerWeights[k+1]*derivativeProduct[k],
+            k=0..maximumDegree-1));
+    end do;
+    if not andmap(IsFiniteNumber,[seq(values[i],i=1..n+1)]) then
+        return [values,false];
+    end if;
+    return [values,true];
+end proc;
+
+LauricellaConvolutionChecked := proc(exactSeries,target::list,digits::posint,
+                                    maximumDegree::posint)
+    local radius,terminationDegree,estimatedDegree,effectiveDegree,
+          lowerDegree,operationCount,oldDigits,half,lowerPrecision,current,previous,
+          degreeDifference,precisionDifference,errorEstimate,tolerance,
+          valueNorm,n,i,success,certificate,guardDigits,transientDegree,
+          precisionOffsets,attempt,workingPrecision,precisionStable,
+          precisionRerun;
+    n := exactSeries:-nvariables;
+    radius := LauricellaConvolutionRadius(exactSeries:-name,target);
+    terminationDegree := LauricellaConvolutionTerminationDegree(exactSeries);
+    ValidateLauricellaConvolutionParameters(exactSeries,terminationDegree);
+    estimatedDegree := `if`(terminationDegree=infinity,
+        HypergeometricSeriesDegree(radius,digits),terminationDegree);
+    transientDegree := HypergeometricTransientDegree(exactSeries);
+    if terminationDegree=infinity and estimatedDegree<>infinity and
+       transientDegree>0 then
+        estimatedDegree := estimatedDegree+transientDegree+12;
+    end if;
+    if terminationDegree<>infinity and terminationDegree>maximumDegree then
+        error "the terminating %1 series needs degree %2, above maximumDegree=%3",exactSeries:-name,terminationDegree,maximumDegree;
+    end if;
+    if terminationDegree=infinity and radius>=1 then
+        return [Vector(n+1,datatype=anything),false,0,infinity,
+            infinity,infinity,0,"outside_convergence_domain",estimatedDegree,radius];
+    end if;
+    effectiveDegree := `if`(terminationDegree=infinity,maximumDegree,terminationDegree);
+    if estimatedDegree<>infinity and terminationDegree=infinity and
+       estimatedDegree+8>effectiveDegree then
+        return [Vector(n+1,datatype=anything),false,effectiveDegree,infinity,
+            infinity,infinity,0,"insufficient_degree",estimatedDegree,radius];
+    end if;
+    operationCount := 8*n*(effectiveDegree+1)^2;
+    if operationCount>20000000 then
+        error "the Lauricella convolution exceeds its twenty-million-operation resource gate";
+    end if;
+    lowerDegree := `if`(terminationDegree=infinity,
+        max(8,estimatedDegree,floor(effectiveDegree/2)),effectiveDegree);
+    guardDigits := HypergeometricConditioningGuardDigits(exactSeries,target);
+    oldDigits := Digits; tolerance := evalf(10^(-(digits+3)));
+    precisionOffsets := [14,24,56,120,248,504,1016,2040,4088];
+    precisionStable := false; attempt := 2; precisionRerun := false;
+    try
+        Digits := digits+guardDigits+precisionOffsets[1];
+        half := LauricellaConvolutionVector(NumericParameterSeries(exactSeries),
+            map(evalf,target),lowerDegree);
+        lowerPrecision := LauricellaConvolutionVector(
+            NumericParameterSeries(exactSeries),map(evalf,target),effectiveDegree);
+        Digits := digits+guardDigits+precisionOffsets[2];
+        current := LauricellaConvolutionVector(NumericParameterSeries(exactSeries),
+            map(evalf,target),effectiveDegree);
+        workingPrecision := Digits;
+        degreeDifference := max(seq(abs(current[1][i]-half[1][i]),i=1..n+1));
+        precisionDifference := max(seq(abs(current[1][i]-
+            lowerPrecision[1][i]),i=1..n+1));
+        valueNorm := max(seq(abs(current[1][i]),i=1..n+1),1);
+        precisionStable := evalb(current[2] and lowerPrecision[2] and
+            precisionDifference<=tolerance*valueNorm);
+        # Repeat a complete convolution at successively higher precision when
+        # a terminating polynomial or opposing parameters amplify rounding.
+        # Agreement covers the value and every first derivative.
+        for attempt from 3 to nops(precisionOffsets) while not precisionStable do
+            if not current[2] then break; end if;
+            precisionRerun := true;
+            previous := current;
+            Digits := digits+guardDigits+precisionOffsets[attempt];
+            workingPrecision := Digits;
+            current := LauricellaConvolutionVector(
+                NumericParameterSeries(exactSeries),map(evalf,target),effectiveDegree);
+            precisionDifference := max(seq(abs(current[1][i]-
+                previous[1][i]),i=1..n+1));
+            valueNorm := max(seq(abs(current[1][i]),i=1..n+1),1);
+            precisionStable := evalb(current[2] and previous[2] and
+                precisionDifference<=tolerance*valueNorm);
+        end do;
+        if precisionStable and precisionRerun then
+            # The doubled-degree comparison must be formed at the same final
+            # precision; otherwise an inaccurate low-precision half sum can
+            # masquerade as truncation error after a successful rerun.
+            half := LauricellaConvolutionVector(NumericParameterSeries(exactSeries),
+                map(evalf,target),lowerDegree);
+            degreeDifference := max(seq(abs(current[1][i]-half[1][i]),
+                i=1..n+1));
+        end if;
+    finally
+        Digits := oldDigits;
+    end try;
+    valueNorm := max(seq(abs(current[1][i]),i=1..n+1),1);
+    errorEstimate := max(precisionDifference,
+        `if`(terminationDegree=infinity,
+            degreeDifference/max(1-radius,10^(-digits)),0));
+    success := evalb(precisionStable and current[2] and
+        (terminationDegree<>infinity or
+         errorEstimate<=tolerance*valueNorm));
+    certificate := `if`(terminationDegree=infinity,
+        `if`(not precisionRerun,"convergence_domain_and_doubled_degree",
+            "convergence_domain_doubled_degree_and_precision_rerun"),
+        `if`(not precisionRerun,"exact_termination",
+            "precision_rerun_exact_termination"));
+    return [current[1],success,effectiveDegree,errorEstimate,
+        degreeDifference,precisionDifference,workingPrecision,
+        `if`(success,certificate,
+            `if`(precisionStable,"failed","precision_unstable")),
+        estimatedDegree,radius];
 end proc;
 
 IsFiniteNumber := proc(value)
@@ -3196,13 +4271,20 @@ MonodromyMatrix := proc(representation, labelValue)
 end proc;
 
 NormaliseWaypoints := proc(target::list, branchSide::integer, waypoints::list)
-    local realTarget, imaginaryShift, path, point, i;
+    local realTarget, imaginaryShift, path, point, numericPoint, i;
     if not member(branchSide, [-1, 0, 1]) then error "branchSide must be -1, 0, or 1"; end if;
+    if not andmap(IsFiniteNumber,target) then
+        error "the transport target must contain finite numeric coordinates";
+    end if;
     if nops(waypoints) > 0 then
         path := [];
         for point in waypoints do
             if nops(point) <> nops(target) then error "a contour waypoint has the wrong length"; end if;
-            path := [op(path), map(evalf, point)];
+            numericPoint := map(evalf,point);
+            if not andmap(IsFiniteNumber,numericPoint) then
+                error "a contour waypoint contains a nonfinite coordinate";
+            end if;
+            path := [op(path),numericPoint];
         end do;
         if nops(path) = 0 or max(seq(abs(path[-1][i] - target[i]), i = 1 .. nops(target))) <> 0 then
             path := [op(path), target];
@@ -3227,8 +4309,8 @@ FindRestrictedPfaffianSystem := proc(
     {epsilon := 0, digits := 50, branchSide := -1, waypoints := [], maximumSeed := 0}
 )
     local system, path;
-    system := FindPfaffianSystem(series, 'epsilon' = epsilon, 'digits' = digits,
-        'maximumSeed' = maximumSeed);
+    system := FindPfaffianSystem(series,parse("epsilon")=epsilon,
+        parse("digits")=digits,parse("maximumSeed")=maximumSeed);
     path := NormaliseWaypoints(map(evalf, target), branchSide, waypoints);
     return MakeRestrictedRecord(system, map(evalf, target), path);
 end proc;
@@ -3241,28 +4323,33 @@ TransportDE := proc(
 )
     local system, target, path, effectiveDigits, direct, directBasis,
           boundary, current, value, endpoint, localSeriesOrder,
-          oldDigits, result;
+          oldDigits, result,pathRequested;
     if systemOrRestricted:-hpType = "RestrictedPfaffianSystem" then
         system := systemOrRestricted:-system;
         target := systemOrRestricted:-target;
         path := systemOrRestricted:-waypoints;
         branchSide := 0;
+        pathRequested := true;
     else
         system := systemOrRestricted;
         target := map(evalf, targetArgument);
-        path := [];
+        pathRequested := evalb(nops(waypoints)>0 or branchSide<>-1);
+        path := `if`(pathRequested,
+            NormaliseWaypoints(target,branchSide,waypoints),[]);
     end if;
     effectiveDigits := `if`(digits = 0, system:-digits, digits);
     oldDigits := Digits; Digits := max(system:-digits, effectiveDigits + 12);
     try
-        direct := DirectSeriesValue(system:-series, target, effectiveDigits,
-            min(maximumDegree, 180));
-        if direct[2] then
-            directBasis := SeriesVector(system:-series, target, system:-basis,
-                effectiveDigits, maximumDegree);
-            if directBasis[2] then
-                result := directBasis[1];
-                return result;
+        if not pathRequested then
+            direct := DirectSeriesValue(system:-series, target, effectiveDigits,
+                min(maximumDegree, 180));
+            if direct[2] then
+                directBasis := SeriesVector(system:-series, target, system:-basis,
+                    effectiveDigits, maximumDegree);
+                if directBasis[2] then
+                    result := directBasis[1];
+                    return result;
+                end if;
             end if;
         end if;
         boundary := BoundarySeries(system, target, maximumDegree);
@@ -3284,10 +4371,13 @@ TransportDE := proc(
 end proc;
 
 ChopValue := proc(value, digits::posint)
-    local threshold, realPart, imaginaryPart;
+    local threshold, realPart, imaginaryPart,scale;
     threshold := evalf(10^(-digits));
-    realPart := `if`(abs(Re(value)) <= threshold, 0, Re(value));
-    imaginaryPart := `if`(abs(Im(value)) <= threshold, 0, Im(value));
+    realPart := Re(value); imaginaryPart := Im(value);
+    scale := max(abs(realPart),abs(imaginaryPart));
+    if evalb(scale=0) then return 0; end if;
+    realPart := `if`(abs(realPart)<=threshold*scale,0,realPart);
+    imaginaryPart := `if`(abs(imaginaryPart)<=threshold*scale,0,imaginaryPart);
     if imaginaryPart = 0 then return evalf(realPart); end if;
     return evalf(realPart + I * imaginaryPart);
 end proc;
@@ -3297,16 +4387,40 @@ Evaluate := proc(
     target::list,
     {digits := 50, epsilon := 0, branchSide := -1, waypoints := [],
      maximumSeed := 0, frobeniusOrder := 0, maximumDegree := 260,
-     maximumSteps := 20000, verbose := false}
+     maximumSteps := 20000, verbose := false, method := "auto",
+     returnDiagnostics := false, returnDerivatives := false}
 )
     local oldDigits, workingDigits, active, restrictedSeries,
-          restrictedTarget, restrictedWaypoints, numeric, direct,
-          system, vector, result, i, point;
+          restrictedTarget, restrictedWaypoints, exactSeries,
+          simplifiedExactSeries,numeric,system,vector,result,i,j,point,
+          familyName,pathRequested,needDerivatives,evaluationAvailable,
+          evaluationVector,seriesResult,methodUsed,certificate,degreeUsed,
+          errorEstimate,estimatedDegree,radius,seriesDegree,
+          terminationDegree,nativeSafe,transportFactors,startTime,
+          presentedValues,derivatives,unit,position,upperCount,lowerCount,
+          preferGeneric,neighborTerms,guardDigits,transientDegree,
+          sourceDigits,specialResult,connectionAtTarget,
+          univariateReduction,pfqLike;
+    startTime := time();
     if digits < 1 then error "digits must be positive"; end if;
+    if not member(method,["auto","series","native","pfaffian","generic"]) then
+        error "method must be auto, series, native, pfaffian, or generic";
+    end if;
     if nops(target) <> series:-nvariables then error "the target has the wrong length"; end if;
-    active := [];
-    for i to nops(target) do if target[i] <> 0 then active := [op(active), i]; end if; end do;
-    if nops(active) = 0 then return evalf[digits](1); end if;
+    pathRequested := evalb(nops(waypoints)>0 or branchSide<>-1);
+    if pathRequested and member(method,["series","native"]) then
+        error "series and native methods evaluate the principal origin germ and cannot honour an explicit path or branch-side request; use method=pfaffian";
+    end if;
+    needDerivatives := evalb(returnDerivatives or returnDiagnostics);
+    if needDerivatives then
+        active := [seq(i,i=1..nops(target))];
+    else
+        active := [];
+        for i to nops(target) do
+            if target[i]<>0 then active := [op(active),i]; end if;
+        end do;
+    end if;
+    if nops(active)=0 then active := [seq(i,i=1..nops(target))]; end if;
     restrictedSeries := RestrictZeroVariables(series, active);
     restrictedTarget := [seq(target[active[i]], i = 1 .. nops(active))];
     restrictedWaypoints := [];
@@ -3315,30 +4429,387 @@ Evaluate := proc(
         restrictedWaypoints := [op(restrictedWaypoints),
             [seq(point[active[i]], i = 1 .. nops(active))]];
     end do;
-    workingDigits := digits + 14;
+    sourceDigits := HypergeometricSourceDigits(restrictedSeries,
+        restrictedTarget,restrictedWaypoints,epsilon);
+    workingDigits := max(digits+14,sourceDigits);
     oldDigits := Digits; Digits := workingDigits;
+    evaluationAvailable := false; evaluationVector := Vector(0);
+    methodUsed := "none"; certificate := "not_applicable";
+    degreeUsed := -1; errorEstimate := infinity; estimatedDegree := -1;
+    transportFactors := 0;
     try
-        numeric := NumericSeries(restrictedSeries, epsilon);
-        restrictedTarget := map(evalf, restrictedTarget);
-        direct := DirectSeriesValue(numeric, restrictedTarget, workingDigits,
-            min(maximumDegree, 180));
-        if direct[2] then
-            result := ChopValue(direct[1], digits);
-        else
-            system := DerivePfaffian(numeric, workingDigits, maximumSeed);
-            vector := TransportDE(system, restrictedTarget,
-                'digits' = digits + 4,
-                'branchSide' = branchSide,
-                'waypoints' = restrictedWaypoints,
-                'frobeniusOrder' = frobeniusOrder,
-                'maximumDegree' = maximumDegree,
-                'maximumSteps' = maximumSteps,
-                'verbose' = verbose);
-            result := ChopValue(vector[1], digits);
+        exactSeries := ExactParameterSeries(restrictedSeries,epsilon);
+        simplifiedExactSeries := CancelExactSeriesParameters(exactSeries);
+        guardDigits := HypergeometricConditioningGuardDigits(
+            simplifiedExactSeries,restrictedTarget);
+        workingDigits := digits+14+guardDigits;
+        Digits := workingDigits;
+        numeric := NumericParameterSeries(simplifiedExactSeries);
+        familyName := StringTools:-LowerCase(restrictedSeries:-name);
+        univariateReduction := evalb(simplifiedExactSeries:-nvariables=1 and
+            andmap(row->evalb(row=[1]),
+                [op(simplifiedExactSeries:-upperWeights),
+                 op(simplifiedExactSeries:-lowerWeights)]));
+        pfqLike := evalb(member(familyName,
+            ["hypergeometricpfq","hypergeometric2f1"]) or
+            univariateReduction);
+        restrictedTarget := map(evalf,restrictedTarget);
+        if pfqLike then
+            PFQExactTerminationAndPoleCheck(simplifiedExactSeries);
+        elif member(familyName,["lauricellafa","lauricellafb","lauricellafc",
+                                "appellf2","appellf3","appellf4"]) then
+            terminationDegree := LauricellaConvolutionTerminationDegree(exactSeries);
+            ValidateLauricellaConvolutionParameters(exactSeries,terminationDegree);
+        elif familyName="lauricellafd" and
+             nops(simplifiedExactSeries:-lowerParameters)>0 and
+             type(simplifiedExactSeries:-lowerParameters[1],integer) and
+             simplifiedExactSeries:-lowerParameters[1]<=0 then
+            terminationDegree := ExactTotalTerminationDegree(simplifiedExactSeries);
+            if terminationDegree=infinity or terminationDegree>=
+               1-simplifiedExactSeries:-lowerParameters[1] then
+                error "the Lauricella FD series has an uncancelled singular lower parameter";
+            end if;
         end if;
+
+        if not pathRequested and
+           pfqLike and
+           method="auto" then
+            terminationDegree := ExactTotalTerminationDegree(
+                simplifiedExactSeries);
+            if terminationDegree<>infinity and
+               (terminationDegree<=maximumDegree or
+                (nops(simplifiedExactSeries:-upperParameters)=1 and
+                 nops(simplifiedExactSeries:-lowerParameters)=0 and
+                 evalb(restrictedTarget[1]=1 or
+                       restrictedTarget[1]=2))) then
+                specialResult := PFQExactClosedFormVector(simplifiedExactSeries,
+                    restrictedTarget[1]);
+                if specialResult[1] then
+                    evaluationVector := specialResult[2];
+                    evaluationAvailable := true; methodUsed := "closed_form";
+                    degreeUsed := terminationDegree;
+                    certificate := specialResult[3];
+                    errorEstimate := HypergeometricRoundingAllowance(
+                        evaluationVector[1],digits+4);
+                end if;
+            end if;
+        end if;
+
+        if not evaluationAvailable and not pathRequested and
+           pfqLike and
+           member(method,["auto","series"]) then
+            terminationDegree := ExactTotalTerminationDegree(simplifiedExactSeries);
+            radius := abs(restrictedTarget[1]);
+            upperCount := nops(simplifiedExactSeries:-upperParameters);
+            lowerCount := nops(simplifiedExactSeries:-lowerParameters);
+            estimatedDegree := `if`(terminationDegree<>infinity,
+                terminationDegree,`if`(upperCount<=lowerCount,
+                    maximumDegree,HypergeometricSeriesDegree(radius,digits)));
+            transientDegree := HypergeometricTransientDegree(simplifiedExactSeries);
+            if terminationDegree=infinity and estimatedDegree<>infinity and
+               transientDegree>0 then
+                estimatedDegree := estimatedDegree+transientDegree+12;
+            end if;
+            if terminationDegree=infinity and transientDegree>0 and
+               estimatedDegree<>infinity and
+               estimatedDegree>maximumDegree then
+                error "maximumDegree=%1 is below the near-pole transient-and-tail degree %2",maximumDegree,estimatedDegree;
+            end if;
+            if method="series" or terminationDegree<>infinity or
+               upperCount<=lowerCount or
+               (upperCount=lowerCount+1 and radius<1 and
+                estimatedDegree<=maximumDegree) then
+                seriesDegree := `if`(terminationDegree=infinity,
+                    `if`(upperCount<=lowerCount or estimatedDegree=infinity,
+                        maximumDegree,
+                        min(maximumDegree,max(16,estimatedDegree))),
+                    maximumDegree);
+                seriesResult := PFQFastSeriesChecked(simplifiedExactSeries,
+                    restrictedTarget[1],digits,max(1,seriesDegree));
+                if not seriesResult[2] and terminationDegree=infinity and
+                   seriesDegree<maximumDegree and
+                   (method="series" or transientDegree>0) then
+                    seriesDegree := maximumDegree;
+                    seriesResult := PFQFastSeriesChecked(simplifiedExactSeries,
+                        restrictedTarget[1],digits,max(1,seriesDegree));
+                end if;
+                if seriesResult[2] then
+                    evaluationVector := seriesResult[1]; evaluationAvailable := true;
+                    methodUsed := "series"; degreeUsed := seriesResult[3];
+                    errorEstimate := seriesResult[4]; certificate := seriesResult[7];
+                elif terminationDegree<>infinity then
+                    error "the terminating generalized hypergeometric recurrence remained precision-unstable through its bounded precision ladder";
+                elif method="series" then
+                    error "the generalized hypergeometric recurrence did not certify %1 digits through degree %2",digits,seriesDegree;
+                end if;
+            elif method="series" then
+                error "the requested generalized hypergeometric series is outside its convergence disk";
+            end if;
+        end if;
+
+        if not evaluationAvailable and not pathRequested and
+           member(familyName,["lauricellafa","lauricellafb","lauricellafc",
+                              "appellf2","appellf3","appellf4"]) and
+           not univariateReduction and
+           member(method,["auto","series"]) then
+            radius := LauricellaConvolutionRadius(exactSeries:-name,restrictedTarget);
+            terminationDegree := LauricellaConvolutionTerminationDegree(exactSeries);
+            estimatedDegree := `if`(terminationDegree=infinity,
+                HypergeometricSeriesDegree(radius,digits),terminationDegree);
+            transientDegree := HypergeometricTransientDegree(exactSeries);
+            if terminationDegree=infinity and estimatedDegree<>infinity and
+               transientDegree>0 then
+                estimatedDegree := estimatedDegree+transientDegree+12;
+            end if;
+            if terminationDegree=infinity and transientDegree>0 and
+               estimatedDegree<>infinity and
+               estimatedDegree>maximumDegree then
+                error "maximumDegree=%1 is below the near-pole transient-and-tail degree %2",maximumDegree,estimatedDegree;
+            end if;
+            seriesDegree := `if`(terminationDegree=infinity,
+                `if`(estimatedDegree=infinity,maximumDegree,
+                    min(maximumDegree,max(16,estimatedDegree+12))),
+                maximumDegree);
+            if method="series" or terminationDegree<>infinity or radius<1 then
+                seriesResult := LauricellaConvolutionChecked(exactSeries,
+                    restrictedTarget,digits,max(1,seriesDegree));
+                if not seriesResult[2] and terminationDegree=infinity and
+                   seriesDegree<maximumDegree and
+                   (method="series" or transientDegree>0) then
+                    seriesDegree := maximumDegree;
+                    seriesResult := LauricellaConvolutionChecked(exactSeries,
+                        restrictedTarget,digits,max(1,seriesDegree));
+                end if;
+                if verbose then
+                    printf("HyperPrecision: %s convolution degree %a, estimated degree %a, radius %a, error %a, certificate %s\n",restrictedSeries:-name,seriesResult[3],seriesResult[9],seriesResult[10],seriesResult[4],seriesResult[8]);
+                end if;
+                if seriesResult[2] then
+                    evaluationVector := seriesResult[1]; evaluationAvailable := true;
+                    methodUsed := "convolution"; degreeUsed := seriesResult[3];
+                    errorEstimate := seriesResult[4]; certificate := seriesResult[8];
+                    estimatedDegree := seriesResult[9];
+                elif terminationDegree<>infinity then
+                    error "the terminating %1 convolution remained precision-unstable through its bounded precision ladder",restrictedSeries:-name;
+                elif method="series" then
+                    error "the %1 convolution did not certify %2 digits through degree %3 (%4)",restrictedSeries:-name,digits,seriesDegree,seriesResult[8];
+                end if;
+            elif method="series" then
+                error "the requested %1 series is outside its standard convergence domain",restrictedSeries:-name;
+            end if;
+        end if;
+
+        if not evaluationAvailable and not pathRequested and
+           member(familyName,["horng1","horng2","horng3","hornh1","hornh2",
+                              "hornh3","hornh4","hornh5","hornh6","hornh7"]) and
+           member(method,["auto","series"]) then
+            terminationDegree := ExactFiniteSupportDegree(simplifiedExactSeries);
+            radius := evalf(4*add(abs(restrictedTarget[i]),i=1..nops(restrictedTarget)));
+            estimatedDegree := `if`(terminationDegree=infinity,
+                HypergeometricSeriesDegree(radius,digits),terminationDegree);
+            transientDegree := HypergeometricTransientDegree(simplifiedExactSeries);
+            if terminationDegree=infinity and estimatedDegree<>infinity and
+               transientDegree>0 then
+                estimatedDegree := estimatedDegree+transientDegree+12;
+            end if;
+            if terminationDegree=infinity and transientDegree>0 and
+               estimatedDegree<>infinity and
+               estimatedDegree>maximumDegree then
+                error "maximumDegree=%1 is below the near-pole transient-and-tail degree %2",maximumDegree,estimatedDegree;
+            end if;
+            if method="series" or terminationDegree<>infinity or radius<1 then
+                seriesDegree := `if`(terminationDegree=infinity,
+                    `if`(estimatedDegree=infinity,maximumDegree,
+                        min(maximumDegree,max(24,estimatedDegree+12))),
+                    maximumDegree);
+                # G1 has a low-rank generic connection.  Once the two checked
+                # total-degree grids exceed this calibrated term count, even a
+                # cold Pfaffian construction is faster.  An explicit series
+                # request always retains the neighbor-ratio implementation.
+                neighborTerms := binomial(seriesDegree+nops(restrictedTarget),
+                    nops(restrictedTarget))+binomial(
+                    floor(seriesDegree/2)+nops(restrictedTarget),
+                    nops(restrictedTarget));
+                preferGeneric := evalb(method="auto" and familyName="horng1" and
+                    nops(restrictedTarget)=2 and terminationDegree=infinity and
+                    neighborTerms>1600);
+                if not preferGeneric then
+                    seriesResult := HornFastGridChecked(simplifiedExactSeries,
+                        restrictedTarget,digits,max(1,seriesDegree),
+                        `if`(terminationDegree=infinity and transientDegree>0,
+                            min(seriesDegree-8,estimatedDegree),-1),
+                        needDerivatives);
+                    if not seriesResult[2] and terminationDegree=infinity and
+                       seriesDegree<maximumDegree and
+                       (method="series" or transientDegree>0) then
+                        seriesDegree := maximumDegree;
+                        seriesResult := HornFastGridChecked(simplifiedExactSeries,
+                            restrictedTarget,digits,max(1,seriesDegree),
+                            `if`(transientDegree>0,
+                                min(seriesDegree-8,estimatedDegree),-1),
+                            needDerivatives);
+                    end if;
+                    if seriesResult[2] then
+                        evaluationVector := seriesResult[1]; evaluationAvailable := true;
+                        methodUsed := "neighbor_series"; degreeUsed := seriesResult[3];
+                        errorEstimate := seriesResult[4]; certificate := seriesResult[8];
+                    elif terminationDegree<>infinity then
+                        error "the terminating Horn neighbor recurrence remained precision-unstable through its bounded precision ladder";
+                    elif method="series" then
+                        error "the Horn neighbor recurrence did not certify %1 digits through degree %2",digits,seriesDegree;
+                    end if;
+                end if;
+            elif method="series" then
+                error "automatic Horn series evaluation is restricted to its conservative interior; use method=pfaffian with an explicit path";
+            end if;
+        end if;
+
+        if not evaluationAvailable and not pathRequested and
+           not member(familyName,["hypergeometricpfq","hypergeometric2f1",
+               "lauricellafa","lauricellafb","lauricellafc",
+               "appellf1","appellf2","appellf3","appellf4",
+               "horng1","horng2","horng3","hornh1","hornh2","hornh3",
+               "hornh4","hornh5","hornh6","hornh7","lauricellafd"]) and
+           member(method,["auto","series"]) then
+            terminationDegree := ExactFiniteSupportDegree(simplifiedExactSeries);
+            radius := evalf(4*add(abs(restrictedTarget[i]),i=1..nops(restrictedTarget)));
+            estimatedDegree := `if`(terminationDegree=infinity,
+                HypergeometricSeriesDegree(radius,digits),terminationDegree);
+            transientDegree := HypergeometricTransientDegree(simplifiedExactSeries);
+            if terminationDegree=infinity and estimatedDegree<>infinity and
+               transientDegree>0 then
+                estimatedDegree := estimatedDegree+transientDegree+12;
+            end if;
+            if terminationDegree=infinity and transientDegree>0 and
+               estimatedDegree<>infinity and
+               estimatedDegree>maximumDegree then
+                error "maximumDegree=%1 is below the near-pole transient-and-tail degree %2",maximumDegree,estimatedDegree;
+            end if;
+            if method="series" or terminationDegree<>infinity or radius<1 then
+                seriesDegree := `if`(terminationDegree=infinity,
+                    `if`(estimatedDegree=infinity,maximumDegree,
+                        min(maximumDegree,max(24,estimatedDegree+12))),
+                    maximumDegree);
+                seriesResult := HornFastGridChecked(simplifiedExactSeries,
+                    restrictedTarget,digits,max(1,seriesDegree),
+                    `if`(terminationDegree=infinity and transientDegree>0,
+                        min(seriesDegree-8,estimatedDegree),-1),
+                    needDerivatives);
+                if not seriesResult[2] and terminationDegree=infinity and
+                   seriesDegree<maximumDegree and
+                   (method="series" or transientDegree>0) then
+                    seriesDegree := maximumDegree;
+                    seriesResult := HornFastGridChecked(simplifiedExactSeries,
+                        restrictedTarget,digits,max(1,seriesDegree),
+                        `if`(transientDegree>0,
+                            min(seriesDegree-8,estimatedDegree),-1),
+                        needDerivatives);
+                end if;
+                if seriesResult[2] then
+                    evaluationVector := seriesResult[1]; evaluationAvailable := true;
+                    methodUsed := "neighbor_series"; degreeUsed := seriesResult[3];
+                    errorEstimate := seriesResult[4]; certificate := seriesResult[8];
+                elif terminationDegree<>infinity then
+                    error "the terminating Horn neighbor recurrence remained precision-unstable through its bounded precision ladder";
+                elif method="series" then
+                    error "the Horn neighbor recurrence did not certify the requested precision within maximumDegree";
+                end if;
+            elif method="series" then
+                error "the requested Horn series is outside the conservative series selector";
+            end if;
+        end if;
+
+        if not evaluationAvailable and
+           pfqLike then
+            upperCount := nops(simplifiedExactSeries:-upperParameters);
+            lowerCount := nops(simplifiedExactSeries:-lowerParameters);
+            terminationDegree := ExactTotalTerminationDegree(simplifiedExactSeries);
+            if terminationDegree=infinity and upperCount>lowerCount+1 and
+               method<>"native" then
+                error "the defining pFq series is divergent for p>q+1; select method=native explicitly if Maple's continuation is intended";
+            end if;
+        end if;
+
+        if not evaluationAvailable and not pathRequested and
+           pfqLike and
+           member(method,["auto","native"]) then
+            upperCount := nops(simplifiedExactSeries:-upperParameters);
+            lowerCount := nops(simplifiedExactSeries:-lowerParameters);
+            nativeSafe := evalb(upperCount<=lowerCount or
+                Im(restrictedTarget[1])<>0 or Re(restrictedTarget[1])<1);
+            if nativeSafe then
+                evaluationVector := PFQNativeValue(simplifiedExactSeries,
+                    restrictedTarget[1],digits+4+guardDigits);
+                evaluationAvailable := true; methodUsed := "native";
+                degreeUsed := -1; certificate := "maple_native";
+                errorEstimate := HypergeometricRoundingAllowance(
+                    evaluationVector[1],digits+4);
+            elif method="native" then
+                error "the native method cannot honour a requested side of the real branch cut; use method=pfaffian";
+            end if;
+        elif method="native" and not
+             pfqLike then
+            error "the native method is available only for generalized univariate hypergeometric functions";
+        end if;
+
+        if not evaluationAvailable then
+            EnsureGenericPfaffianSafe(numeric,maximumSeed);
+            system := DerivePfaffian(numeric, workingDigits, maximumSeed);
+            vector := TransportDE(system,restrictedTarget,
+                parse("digits")=digits+4,
+                parse("branchSide")=branchSide,
+                parse("waypoints")=restrictedWaypoints,
+                parse("frobeniusOrder")=frobeniusOrder,
+                parse("maximumDegree")=maximumDegree,
+                parse("maximumSteps")=maximumSteps,
+                parse("verbose")=verbose);
+            evaluationVector := Vector(nops(active)+1,datatype=anything);
+            evaluationVector[1] := vector[1];
+            connectionAtTarget := NULL;
+            for i to nops(active) do
+                unit := UnitIndex(nops(active),i); position := 0;
+                for j to nops(system:-basis) do
+                    if evalb(system:-basis[j]=unit) then position := j; break; end if;
+                end do;
+                if position=0 then
+                    if nops(system:-basis)=1 then
+                        if connectionAtTarget=NULL then
+                            connectionAtTarget := ConnectionMatricesInternal(
+                                system,restrictedTarget);
+                        end if;
+                        evaluationVector[i+1] :=
+                            connectionAtTarget[i][1,1]*vector[1];
+                    elif needDerivatives then
+                        error "the generic Pfaffian basis does not expose derivative %1",i;
+                    else
+                        evaluationVector[i+1] := 0;
+                    end if;
+                else
+                    evaluationVector[i+1] := vector[position];
+                end if;
+            end do;
+            evaluationAvailable := true; methodUsed := "pfaffian";
+            certificate := "transport_error_unknown"; degreeUsed := -1;
+            errorEstimate := infinity;
+            transportFactors := -1;
+        end if;
+
+        presentedValues := [seq(evalf[digits](ChopValue(
+            evaluationVector[i],digits)),i=1..nops(active)+1)];
+        result := presentedValues[1];
+        derivatives := `if`(needDerivatives,presentedValues[2..-1],[]);
     finally
         Digits := oldDigits;
     end try;
+    if returnDiagnostics then
+        errorEstimate := max(errorEstimate,
+            HypergeometricRoundingAllowance(result,digits));
+        return MakeHypergeometricEvaluationRecord(result,derivatives,
+            methodUsed,degreeUsed,errorEstimate,evalf(time()-startTime),
+            certificate,series:-name,nops(active),estimatedDegree,
+            transportFactors);
+    elif returnDerivatives then
+        return Vector([result,op(derivatives)],datatype=anything);
+    end if;
     return result;
 end proc;
 
@@ -3389,11 +4860,12 @@ HypExpand := proc(
     inferredPole := `if`(poleOrder = "automatic", EstimatePoleOrder(series), poleOrder);
     if not type(inferredPole, nonnegint) then error "poleOrder must be non-negative"; end if;
     if not HasEpsilon(series) then
-        value := Evaluate(series, target, 'digits' = digits,
-            'branchSide' = branchSide, 'waypoints' = waypoints,
-            'maximumSeed' = maximumSeed, 'frobeniusOrder' = frobeniusOrder,
-            'maximumDegree' = maximumDegree, 'maximumSteps' = maximumSteps,
-            'verbose' = verbose);
+        value := Evaluate(series,target,parse("digits")=digits,
+            parse("branchSide")=branchSide,parse("waypoints")=waypoints,
+            parse("maximumSeed")=maximumSeed,
+            parse("frobeniusOrder")=frobeniusOrder,
+            parse("maximumDegree")=maximumDegree,
+            parse("maximumSteps")=maximumSteps,parse("verbose")=verbose);
         coefficients := [value, seq(0, i = 1 .. epsilonOrder)];
         return MakeLaurentRecord(0, coefficients, 0, digits);
     end if;
@@ -3414,12 +4886,13 @@ HypExpand := proc(
                 printf("HyperPrecision: epsilon sample %d/%d at %a\n",
                     index, sampleCount, epsilonValue);
             end if;
-            value := Evaluate(series, target, 'digits' = workingDigits,
-                'epsilon' = epsilonValue, 'branchSide' = branchSide,
-                'waypoints' = waypoints, 'maximumSeed' = maximumSeed,
-                'frobeniusOrder' = frobeniusOrder,
-                'maximumDegree' = maximumDegree, 'maximumSteps' = maximumSteps,
-                'verbose' = false);
+            value := Evaluate(series,target,parse("digits")=workingDigits,
+                parse("epsilon")=epsilonValue,
+                parse("branchSide")=branchSide,parse("waypoints")=waypoints,
+                parse("maximumSeed")=maximumSeed,
+                parse("frobeniusOrder")=frobeniusOrder,
+                parse("maximumDegree")=maximumDegree,
+                parse("maximumSteps")=maximumSteps,parse("verbose")=false);
             valuesAtNodes[index] := evalf(value *
                 (epsilonScale * scaledNodes[index])^inferredPole);
         end do;
@@ -3441,12 +4914,13 @@ HypExpand := proc(
         end do;
         validationNode := evalf(1.75);
         validationEpsilon := evalf(epsilonScale * validationNode);
-        validationValue := Evaluate(series, target, 'digits' = workingDigits,
-            'epsilon' = validationEpsilon, 'branchSide' = branchSide,
-            'waypoints' = waypoints, 'maximumSeed' = maximumSeed,
-            'frobeniusOrder' = frobeniusOrder,
-            'maximumDegree' = maximumDegree, 'maximumSteps' = maximumSteps,
-            'verbose' = false);
+        validationValue := Evaluate(series,target,
+            parse("digits")=workingDigits,parse("epsilon")=validationEpsilon,
+            parse("branchSide")=branchSide,parse("waypoints")=waypoints,
+            parse("maximumSeed")=maximumSeed,
+            parse("frobeniusOrder")=frobeniusOrder,
+            parse("maximumDegree")=maximumDegree,
+            parse("maximumSteps")=maximumSteps,parse("verbose")=false);
         reconstructed := 0;
         for polynomialDegree from 0 to fitDegree do
             reconstructed := reconstructed + scaledCoefficients[polynomialDegree + 1] *
@@ -3499,8 +4973,8 @@ PredefinedSeries := proc(functionName, parameters::list, variables::nonnegint)
     name := StringTools:-LowerCase(convert(functionName, string));
     if member(name, ["hypergeometricpfq", "pfq"]) then
         if nops(parameters) <> 2 then error "HypergeometricPFQ expects upper and lower parameter lists"; end if;
-        if nops(parameters[1]) <> nops(parameters[2]) + 1 then
-            error "the implemented generalized function must have type pF(p-1)";
+        if nops(parameters[1])=0 and nops(parameters[2])=0 then
+            return MakeHornRecord("HypergeometricPFQ",1,[],[],[],[]);
         end if;
         return HornSeries(parameters[1], [seq([1], i = 1 .. nops(parameters[1]))],
             parameters[2], [seq([1], i = 1 .. nops(parameters[2]))], "HypergeometricPFQ");
@@ -3587,203 +5061,294 @@ end proc;
 FinishPredefined := proc(
     series, target, digits, epsilon, epsilonOrder, poleOrder,
     branchSide, waypoints, maximumSeed, frobeniusOrder,
-    maximumDegree, maximumSteps, verbose
+    maximumDegree, maximumSteps, verbose, method := "auto",
+    returnDiagnostics := false, returnDerivatives := false
 )
     if epsilonOrder = "none" then
-        return Evaluate(series, target, 'digits' = digits, 'epsilon' = epsilon,
-            'branchSide' = branchSide, 'waypoints' = waypoints,
-            'maximumSeed' = maximumSeed, 'frobeniusOrder' = frobeniusOrder,
-            'maximumDegree' = maximumDegree, 'maximumSteps' = maximumSteps,
-            'verbose' = verbose);
+        return Evaluate(series,target,parse("digits")=digits,
+            parse("epsilon")=epsilon,parse("branchSide")=branchSide,
+            parse("waypoints")=waypoints,parse("maximumSeed")=maximumSeed,
+            parse("frobeniusOrder")=frobeniusOrder,
+            parse("maximumDegree")=maximumDegree,
+            parse("maximumSteps")=maximumSteps,parse("verbose")=verbose,
+            parse("method")=method,
+            parse("returnDiagnostics")=returnDiagnostics,
+            parse("returnDerivatives")=returnDerivatives);
     end if;
-    return HypExpand(series, target, epsilonOrder, digits,
-        'poleOrder' = poleOrder, 'branchSide' = branchSide,
-        'waypoints' = waypoints, 'maximumSeed' = maximumSeed,
-        'frobeniusOrder' = frobeniusOrder, 'maximumDegree' = maximumDegree,
-        'maximumSteps' = maximumSteps, 'verbose' = verbose);
+    if method<>"auto" or returnDiagnostics or returnDerivatives then
+        error "method selection and evaluation diagnostics are not available during epsilon expansion";
+    end if;
+    return HypExpand(series,target,epsilonOrder,digits,
+        parse("poleOrder")=poleOrder,parse("branchSide")=branchSide,
+        parse("waypoints")=waypoints,parse("maximumSeed")=maximumSeed,
+        parse("frobeniusOrder")=frobeniusOrder,
+        parse("maximumDegree")=maximumDegree,
+        parse("maximumSteps")=maximumSteps,parse("verbose")=verbose);
 end proc;
 
 HypergeometricPFQ := proc(
     upper::list, lower::list, argument,
     {digits := 50, epsilon := 0, epsilonOrder := "none", poleOrder := "automatic",
      branchSide := -1, waypoints := [], maximumSeed := 0, frobeniusOrder := 0,
-     maximumDegree := 260, maximumSteps := 20000, verbose := false}
+     maximumDegree := 260, maximumSteps := 20000, verbose := false,
+     method := "auto", returnDiagnostics := false, returnDerivatives := false}
 )
     return FinishPredefined(PredefinedSeries("HypergeometricPFQ", [upper, lower], 1),
         [argument], digits, epsilon, epsilonOrder, poleOrder, branchSide, waypoints,
-        maximumSeed, frobeniusOrder, maximumDegree, maximumSteps, verbose);
+        maximumSeed, frobeniusOrder, maximumDegree, maximumSteps, verbose,
+        method,returnDiagnostics,returnDerivatives);
 end proc;
 
 Hypergeometric2F1 := proc(
     a, b, c, argument,
     {digits := 50, epsilon := 0, epsilonOrder := "none", poleOrder := "automatic",
      branchSide := -1, waypoints := [], maximumSeed := 0, frobeniusOrder := 0,
-     maximumDegree := 260, maximumSteps := 20000, verbose := false}
+     maximumDegree := 260, maximumSteps := 20000, verbose := false,
+     method := "auto", returnDiagnostics := false, returnDerivatives := false}
 )
     return FinishPredefined(PredefinedSeries("Hypergeometric2F1", [a,b,c], 1),
         [argument], digits, epsilon, epsilonOrder, poleOrder, branchSide, waypoints,
-        maximumSeed, frobeniusOrder, maximumDegree, maximumSteps, verbose);
+        maximumSeed, frobeniusOrder, maximumDegree, maximumSteps, verbose,
+        method,returnDiagnostics,returnDerivatives);
 end proc;
 
 AppellF1 := proc(
     a, b1, b2, c, x, y,
     {digits := 50, epsilon := 0, epsilonOrder := "none", poleOrder := "automatic",
      branchSide := -1, waypoints := [], maximumSeed := 0, frobeniusOrder := 0,
-     maximumDegree := 260, maximumSteps := 20000, verbose := false}
+     maximumDegree := 260, maximumSteps := 20000, verbose := false,
+     method := "auto", returnDiagnostics := false, returnDerivatives := false}
 )
-    return FinishPredefined(PredefinedSeries("AppellF1", [a,b1,b2,c], 2), [x,y],
-        digits, epsilon, epsilonOrder, poleOrder, branchSide, waypoints,
-        maximumSeed, frobeniusOrder, maximumDegree, maximumSteps, verbose);
+    if method="native" then error "the native method is not available for Appell F1"; end if;
+    return LauricellaFD(a,[b1,b2],c,[x,y],
+        parse("digits")=digits,parse("epsilon")=epsilon,
+        parse("epsilonOrder")=epsilonOrder,parse("poleOrder")=poleOrder,
+        parse("branchSide")=branchSide,parse("waypoints")=waypoints,
+        parse("maximumSeed")=maximumSeed,
+        parse("frobeniusOrder")=frobeniusOrder,
+        parse("maximumDegree")=maximumDegree,
+        parse("maximumSteps")=maximumSteps,parse("verbose")=verbose,
+        parse("method")=method,
+        parse("returnDiagnostics")=returnDiagnostics,
+        parse("returnDerivatives")=returnDerivatives);
 end proc;
 
 AppellF2 := proc(
     a, b1, b2, c1, c2, x, y,
     {digits := 50, epsilon := 0, epsilonOrder := "none", poleOrder := "automatic",
      branchSide := -1, waypoints := [], maximumSeed := 0, frobeniusOrder := 0,
-     maximumDegree := 260, maximumSteps := 20000, verbose := false}
+     maximumDegree := 260, maximumSteps := 20000, verbose := false,
+     method := "auto", returnDiagnostics := false, returnDerivatives := false}
 )
-    return FinishPredefined(PredefinedSeries("AppellF2", [a,b1,b2,c1,c2], 2), [x,y],
-        digits, epsilon, epsilonOrder, poleOrder, branchSide, waypoints,
-        maximumSeed, frobeniusOrder, maximumDegree, maximumSteps, verbose);
+    return LauricellaFA(a,[b1,b2],[c1,c2],[x,y],
+        parse("digits")=digits,parse("epsilon")=epsilon,
+        parse("epsilonOrder")=epsilonOrder,parse("poleOrder")=poleOrder,
+        parse("branchSide")=branchSide,parse("waypoints")=waypoints,
+        parse("maximumSeed")=maximumSeed,
+        parse("frobeniusOrder")=frobeniusOrder,
+        parse("maximumDegree")=maximumDegree,
+        parse("maximumSteps")=maximumSteps,parse("verbose")=verbose,
+        parse("method")=method,
+        parse("returnDiagnostics")=returnDiagnostics,
+        parse("returnDerivatives")=returnDerivatives);
 end proc;
 
 AppellF3 := proc(
     a1, a2, b1, b2, c, x, y,
     {digits := 50, epsilon := 0, epsilonOrder := "none", poleOrder := "automatic",
      branchSide := -1, waypoints := [], maximumSeed := 0, frobeniusOrder := 0,
-     maximumDegree := 260, maximumSteps := 20000, verbose := false}
+     maximumDegree := 260, maximumSteps := 20000, verbose := false,
+     method := "auto", returnDiagnostics := false, returnDerivatives := false}
 )
-    return FinishPredefined(PredefinedSeries("AppellF3", [a1,a2,b1,b2,c], 2), [x,y],
-        digits, epsilon, epsilonOrder, poleOrder, branchSide, waypoints,
-        maximumSeed, frobeniusOrder, maximumDegree, maximumSteps, verbose);
+    return LauricellaFB([a1,a2],[b1,b2],c,[x,y],
+        parse("digits")=digits,parse("epsilon")=epsilon,
+        parse("epsilonOrder")=epsilonOrder,parse("poleOrder")=poleOrder,
+        parse("branchSide")=branchSide,parse("waypoints")=waypoints,
+        parse("maximumSeed")=maximumSeed,
+        parse("frobeniusOrder")=frobeniusOrder,
+        parse("maximumDegree")=maximumDegree,
+        parse("maximumSteps")=maximumSteps,parse("verbose")=verbose,
+        parse("method")=method,
+        parse("returnDiagnostics")=returnDiagnostics,
+        parse("returnDerivatives")=returnDerivatives);
 end proc;
 
 AppellF4 := proc(
     a, b, c1, c2, x, y,
     {digits := 50, epsilon := 0, epsilonOrder := "none", poleOrder := "automatic",
      branchSide := -1, waypoints := [], maximumSeed := 0, frobeniusOrder := 0,
-     maximumDegree := 260, maximumSteps := 20000, verbose := false}
+     maximumDegree := 260, maximumSteps := 20000, verbose := false,
+     method := "auto", returnDiagnostics := false, returnDerivatives := false}
 )
-    return FinishPredefined(PredefinedSeries("AppellF4", [a,b,c1,c2], 2), [x,y],
-        digits, epsilon, epsilonOrder, poleOrder, branchSide, waypoints,
-        maximumSeed, frobeniusOrder, maximumDegree, maximumSteps, verbose);
+    return LauricellaFC(a,b,[c1,c2],[x,y],
+        parse("digits")=digits,parse("epsilon")=epsilon,
+        parse("epsilonOrder")=epsilonOrder,parse("poleOrder")=poleOrder,
+        parse("branchSide")=branchSide,parse("waypoints")=waypoints,
+        parse("maximumSeed")=maximumSeed,
+        parse("frobeniusOrder")=frobeniusOrder,
+        parse("maximumDegree")=maximumDegree,
+        parse("maximumSteps")=maximumSteps,parse("verbose")=verbose,
+        parse("method")=method,
+        parse("returnDiagnostics")=returnDiagnostics,
+        parse("returnDerivatives")=returnDerivatives);
 end proc;
 
 HornG1 := proc(
     a, b, c, x, y,
     {digits := 50, epsilon := 0, epsilonOrder := "none", poleOrder := "automatic",
      branchSide := -1, waypoints := [], maximumSeed := 0, frobeniusOrder := 0,
-     maximumDegree := 260, maximumSteps := 20000, verbose := false}
+     maximumDegree := 260, maximumSteps := 20000, verbose := false,
+     method := "auto", returnDiagnostics := false, returnDerivatives := false}
 )
+    local selectedMethod, radius, estimatedDegree, seriesDegree, neighborTerms;
+    selectedMethod := method;
+    # Avoid paying the complete automatic-series admission cost before the
+    # low-rank generic connection in the regime where the calibrated selector
+    # will choose that connection anyway.  Keep exact finite support and
+    # epsilon reconstruction on the full automatic path.
+    if method="auto" and epsilonOrder="none" and
+       type(a,numeric) and type(b,numeric) and type(c,numeric) and
+       type(x,numeric) and type(y,numeric) and
+       not (type(a,integer) and a<=0) then
+        radius := evalf(4*(abs(x)+abs(y)));
+        if radius<1 then
+            estimatedDegree := HypergeometricSeriesDegree(radius,digits);
+            seriesDegree := `if`(estimatedDegree=infinity,maximumDegree,
+                min(maximumDegree,max(24,estimatedDegree+12)));
+            neighborTerms := binomial(seriesDegree+2,2)+
+                binomial(floor(seriesDegree/2)+2,2);
+            if neighborTerms>1600 then selectedMethod := "generic"; end if;
+        end if;
+    end if;
     return FinishPredefined(PredefinedSeries("HornG1", [a,b,c], 2), [x,y], digits,
         epsilon, epsilonOrder, poleOrder, branchSide, waypoints, maximumSeed,
-        frobeniusOrder, maximumDegree, maximumSteps, verbose);
+        frobeniusOrder, maximumDegree, maximumSteps, verbose,
+        selectedMethod,returnDiagnostics,returnDerivatives);
 end proc;
 
 HornG2 := proc(
     a, b, c, d, x, y,
     {digits := 50, epsilon := 0, epsilonOrder := "none", poleOrder := "automatic",
      branchSide := -1, waypoints := [], maximumSeed := 0, frobeniusOrder := 0,
-     maximumDegree := 260, maximumSteps := 20000, verbose := false}
+     maximumDegree := 260, maximumSteps := 20000, verbose := false,
+     method := "auto", returnDiagnostics := false, returnDerivatives := false}
 )
     return FinishPredefined(PredefinedSeries("HornG2", [a,b,c,d], 2), [x,y], digits,
         epsilon, epsilonOrder, poleOrder, branchSide, waypoints, maximumSeed,
-        frobeniusOrder, maximumDegree, maximumSteps, verbose);
+        frobeniusOrder, maximumDegree, maximumSteps, verbose,
+        method,returnDiagnostics,returnDerivatives);
 end proc;
 
 HornG3 := proc(
     a, b, x, y,
     {digits := 50, epsilon := 0, epsilonOrder := "none", poleOrder := "automatic",
      branchSide := -1, waypoints := [], maximumSeed := 0, frobeniusOrder := 0,
-     maximumDegree := 260, maximumSteps := 20000, verbose := false}
+     maximumDegree := 260, maximumSteps := 20000, verbose := false,
+     method := "auto", returnDiagnostics := false, returnDerivatives := false}
 )
     return FinishPredefined(PredefinedSeries("HornG3", [a,b], 2), [x,y], digits,
         epsilon, epsilonOrder, poleOrder, branchSide, waypoints, maximumSeed,
-        frobeniusOrder, maximumDegree, maximumSteps, verbose);
+        frobeniusOrder, maximumDegree, maximumSteps, verbose,
+        method,returnDiagnostics,returnDerivatives);
 end proc;
 
 HornH1 := proc(
     a, b, c, d, x, y,
     {digits := 50, epsilon := 0, epsilonOrder := "none", poleOrder := "automatic",
      branchSide := -1, waypoints := [], maximumSeed := 0, frobeniusOrder := 0,
-     maximumDegree := 260, maximumSteps := 20000, verbose := false}
+     maximumDegree := 260, maximumSteps := 20000, verbose := false,
+     method := "auto", returnDiagnostics := false, returnDerivatives := false}
 )
     return FinishPredefined(PredefinedSeries("HornH1", [a,b,c,d], 2), [x,y], digits,
         epsilon, epsilonOrder, poleOrder, branchSide, waypoints, maximumSeed,
-        frobeniusOrder, maximumDegree, maximumSteps, verbose);
+        frobeniusOrder, maximumDegree, maximumSteps, verbose,
+        method,returnDiagnostics,returnDerivatives);
 end proc;
 
 HornH2 := proc(
     a, b, c, d, e, x, y,
     {digits := 50, epsilon := 0, epsilonOrder := "none", poleOrder := "automatic",
      branchSide := -1, waypoints := [], maximumSeed := 0, frobeniusOrder := 0,
-     maximumDegree := 260, maximumSteps := 20000, verbose := false}
+     maximumDegree := 260, maximumSteps := 20000, verbose := false,
+     method := "auto", returnDiagnostics := false, returnDerivatives := false}
 )
     return FinishPredefined(PredefinedSeries("HornH2", [a,b,c,d,e], 2), [x,y], digits,
         epsilon, epsilonOrder, poleOrder, branchSide, waypoints, maximumSeed,
-        frobeniusOrder, maximumDegree, maximumSteps, verbose);
+        frobeniusOrder, maximumDegree, maximumSteps, verbose,
+        method,returnDiagnostics,returnDerivatives);
 end proc;
 
 HornH3 := proc(
     a, b, c, x, y,
     {digits := 50, epsilon := 0, epsilonOrder := "none", poleOrder := "automatic",
      branchSide := -1, waypoints := [], maximumSeed := 0, frobeniusOrder := 0,
-     maximumDegree := 260, maximumSteps := 20000, verbose := false}
+     maximumDegree := 260, maximumSteps := 20000, verbose := false,
+     method := "auto", returnDiagnostics := false, returnDerivatives := false}
 )
     return FinishPredefined(PredefinedSeries("HornH3", [a,b,c], 2), [x,y], digits,
         epsilon, epsilonOrder, poleOrder, branchSide, waypoints, maximumSeed,
-        frobeniusOrder, maximumDegree, maximumSteps, verbose);
+        frobeniusOrder, maximumDegree, maximumSteps, verbose,
+        method,returnDiagnostics,returnDerivatives);
 end proc;
 
 HornH4 := proc(
     a, b, c, d, x, y,
     {digits := 50, epsilon := 0, epsilonOrder := "none", poleOrder := "automatic",
      branchSide := -1, waypoints := [], maximumSeed := 0, frobeniusOrder := 0,
-     maximumDegree := 260, maximumSteps := 20000, verbose := false}
+     maximumDegree := 260, maximumSteps := 20000, verbose := false,
+     method := "auto", returnDiagnostics := false, returnDerivatives := false}
 )
     return FinishPredefined(PredefinedSeries("HornH4", [a,b,c,d], 2), [x,y], digits,
         epsilon, epsilonOrder, poleOrder, branchSide, waypoints, maximumSeed,
-        frobeniusOrder, maximumDegree, maximumSteps, verbose);
+        frobeniusOrder, maximumDegree, maximumSteps, verbose,
+        method,returnDiagnostics,returnDerivatives);
 end proc;
 
 HornH5 := proc(
     a, b, c, x, y,
     {digits := 50, epsilon := 0, epsilonOrder := "none", poleOrder := "automatic",
      branchSide := -1, waypoints := [], maximumSeed := 0, frobeniusOrder := 0,
-     maximumDegree := 260, maximumSteps := 20000, verbose := false}
+     maximumDegree := 260, maximumSteps := 20000, verbose := false,
+     method := "auto", returnDiagnostics := false, returnDerivatives := false}
 )
     return FinishPredefined(PredefinedSeries("HornH5", [a,b,c], 2), [x,y], digits,
         epsilon, epsilonOrder, poleOrder, branchSide, waypoints, maximumSeed,
-        frobeniusOrder, maximumDegree, maximumSteps, verbose);
+        frobeniusOrder, maximumDegree, maximumSteps, verbose,
+        method,returnDiagnostics,returnDerivatives);
 end proc;
 
 HornH6 := proc(
     a, b, c, x, y,
     {digits := 50, epsilon := 0, epsilonOrder := "none", poleOrder := "automatic",
      branchSide := -1, waypoints := [], maximumSeed := 0, frobeniusOrder := 0,
-     maximumDegree := 260, maximumSteps := 20000, verbose := false}
+     maximumDegree := 260, maximumSteps := 20000, verbose := false,
+     method := "auto", returnDiagnostics := false, returnDerivatives := false}
 )
     return FinishPredefined(PredefinedSeries("HornH6", [a,b,c], 2), [x,y], digits,
         epsilon, epsilonOrder, poleOrder, branchSide, waypoints, maximumSeed,
-        frobeniusOrder, maximumDegree, maximumSteps, verbose);
+        frobeniusOrder, maximumDegree, maximumSteps, verbose,
+        method,returnDiagnostics,returnDerivatives);
 end proc;
 
 HornH7 := proc(
     a, b, c, d, x, y,
     {digits := 50, epsilon := 0, epsilonOrder := "none", poleOrder := "automatic",
      branchSide := -1, waypoints := [], maximumSeed := 0, frobeniusOrder := 0,
-     maximumDegree := 260, maximumSteps := 20000, verbose := false}
+     maximumDegree := 260, maximumSteps := 20000, verbose := false,
+     method := "auto", returnDiagnostics := false, returnDerivatives := false}
 )
     return FinishPredefined(PredefinedSeries("HornH7", [a,b,c,d], 2), [x,y], digits,
         epsilon, epsilonOrder, poleOrder, branchSide, waypoints, maximumSeed,
-        frobeniusOrder, maximumDegree, maximumSteps, verbose);
+        frobeniusOrder, maximumDegree, maximumSteps, verbose,
+        method,returnDiagnostics,returnDerivatives);
 end proc;
 
 LauricellaFA := proc(
     a, b::list, c::list, x::list,
     {digits := 50, epsilon := 0, epsilonOrder := "none", poleOrder := "automatic",
      branchSide := -1, waypoints := [], maximumSeed := 0, frobeniusOrder := 0,
-     maximumDegree := 260, maximumSteps := 20000, verbose := false}
+     maximumDegree := 260, maximumSteps := 20000, verbose := false,
+     method := "auto", returnDiagnostics := false, returnDerivatives := false}
 )
     local parameters;
     if nops(b) <> nops(c) or nops(b) <> nops(x) then
@@ -3792,14 +5357,16 @@ LauricellaFA := proc(
     parameters := [a, op(b), op(c)];
     return FinishPredefined(PredefinedSeries("LauricellaFA", parameters, nops(x)), x,
         digits, epsilon, epsilonOrder, poleOrder, branchSide, waypoints, maximumSeed,
-        frobeniusOrder, maximumDegree, maximumSteps, verbose);
+        frobeniusOrder, maximumDegree, maximumSteps, verbose,
+        method,returnDiagnostics,returnDerivatives);
 end proc;
 
 LauricellaFB := proc(
     a::list, b::list, c, x::list,
     {digits := 50, epsilon := 0, epsilonOrder := "none", poleOrder := "automatic",
      branchSide := -1, waypoints := [], maximumSeed := 0, frobeniusOrder := 0,
-     maximumDegree := 260, maximumSteps := 20000, verbose := false}
+     maximumDegree := 260, maximumSteps := 20000, verbose := false,
+     method := "auto", returnDiagnostics := false, returnDerivatives := false}
 )
     local parameters;
     if nops(a) <> nops(b) or nops(a) <> nops(x) then
@@ -3808,19 +5375,22 @@ LauricellaFB := proc(
     parameters := [op(a), op(b), c];
     return FinishPredefined(PredefinedSeries("LauricellaFB", parameters, nops(x)), x,
         digits, epsilon, epsilonOrder, poleOrder, branchSide, waypoints, maximumSeed,
-        frobeniusOrder, maximumDegree, maximumSteps, verbose);
+        frobeniusOrder, maximumDegree, maximumSteps, verbose,
+        method,returnDiagnostics,returnDerivatives);
 end proc;
 
 LauricellaFC := proc(
     a, b, c::list, x::list,
     {digits := 50, epsilon := 0, epsilonOrder := "none", poleOrder := "automatic",
      branchSide := -1, waypoints := [], maximumSeed := 0, frobeniusOrder := 0,
-     maximumDegree := 260, maximumSteps := 20000, verbose := false}
+     maximumDegree := 260, maximumSteps := 20000, verbose := false,
+     method := "auto", returnDiagnostics := false, returnDerivatives := false}
 )
     if nops(c) <> nops(x) then error "c and x must have the same length"; end if;
     return FinishPredefined(PredefinedSeries("LauricellaFC", [a,b,op(c)], nops(x)), x,
         digits, epsilon, epsilonOrder, poleOrder, branchSide, waypoints, maximumSeed,
-        frobeniusOrder, maximumDegree, maximumSteps, verbose);
+        frobeniusOrder, maximumDegree, maximumSteps, verbose,
+        method,returnDiagnostics,returnDerivatives);
 end proc;
 
 # Compress zero and exactly repeated variables before selecting an evaluation
@@ -3919,15 +5489,16 @@ LauricellaFDWorkingGuardDigits := proc(b::list,x::list,a := 0,c := 1)
             end do;
         end do;
         for parameterValue in [a,c] do
-            if Im(parameterValue)=0 then
-                nearestInteger := round(Re(parameterValue));
-                candidate := parameterValue-nearestInteger;
-                if nearestInteger<=0 and not evalb(candidate=0) then
-                    ratio := evalf(max(1,abs(parameterValue))/abs(candidate));
-                    if IsFiniteNumber(ratio) and ratio>1 then
-                        separationGuard := max(separationGuard,
-                            ceil(evalf(ln(ratio)/ln(10))));
-                    end if;
+            # Measure the full complex distance to a nonpositive integer.
+            # A real-only test loses the phase of a diagonal perturbation
+            # after the caller lowers Digits.
+            nearestInteger := round(Re(parameterValue));
+            candidate := parameterValue-nearestInteger;
+            if nearestInteger<=0 and not evalb(candidate=0) then
+                ratio := evalf(max(1,abs(parameterValue))/abs(candidate));
+                if IsFiniteNumber(ratio) and ratio>1 then
+                    separationGuard := max(separationGuard,
+                        ceil(evalf(ln(ratio)/ln(10))));
                 end if;
             end if;
         end do;
@@ -4022,7 +5593,7 @@ LauricellaFDFastSeriesVector := proc(
           coefficientValue, majorantCoefficient, termValue,
           derivativeTerm, majorantTerm, shellNorm, majorantShell,
           valueNorm, tolerance, qBound, bMagnitude, rhoUpper,
-          tailEstimate, i, j;
+          tailEstimate, aMagnitude, cMagnitude, i, j;
     n := nops(x);
     if nops(b) <> n then error "b and x must have the same length"; end if;
     coefficients := Array(0..maximumDegree,fill=0);
@@ -4039,6 +5610,8 @@ LauricellaFDFastSeriesVector := proc(
     tolerance := evalf(10^(-(digits+6)));
     qBound := `if`(n=0,0,max(seq(abs(x[i]),i=1..n)));
     bMagnitude := add(abs(b[i]),i=1..n);
+    aMagnitude := evalf(abs(a));
+    cMagnitude := evalf(abs(c));
     tailEstimate := infinity;
     for degree to maximumDegree do
         if evalb(c+degree-1 = 0) then
@@ -4088,8 +5661,8 @@ LauricellaFDFastSeriesVector := proc(
         # first-derivative majorant ratio is bounded by the expression below.
         # Its two rational factors decrease once degree>|c|.  This supplies an
         # absolute geometric tail bound and cannot be fooled by cancellation.
-        if degree > abs(c) and degree >= 8 then
-            rhoUpper := evalf(qBound*(degree+abs(a))/(degree-abs(c))*
+        if degree > cMagnitude and degree >= 8 then
+            rhoUpper := evalf(qBound*(degree+aMagnitude)/(degree-cMagnitude)*
                 (degree+bMagnitude)/degree);
         else
             rhoUpper := infinity;
@@ -4228,31 +5801,41 @@ LauricellaFDInitialVector := proc(
     a,b::list,c,x::list,
     {digits := 50, maximumDegree := 260, returnDiagnostics := false}
 )
-    local result, guardDigits, presentedValues, outputRounding, value;
+    local result, guardDigits, presentedValues, outputRounding, value,
+          series, sourceDigits, oldDigits, answer;
     if nops(b) <> nops(x) then error "b and x must have the same length"; end if;
     if digits < 1 then error "digits must be positive"; end if;
-    guardDigits := LauricellaFDWorkingGuardDigits(b,x,a,c);
-    result := LauricellaFDFastSeriesChecked(a,b,c,x,digits,
-        maximumDegree,guardDigits);
-    if not result[2] then
-        error "the grouped Lauricella FD boundary series did not converge or lost precision through degree %1",maximumDegree;
-    end if;
-    presentedValues := map(entry->evalf[digits](entry),result[1]);
-    outputRounding := max(seq(
-        LauricellaFDRoundingAllowance(value,digits),
-        value in convert(presentedValues,list)));
-    if returnDiagnostics then
-        return Record('hpType'="LauricellaFDInitialVector",
-            'value'=presentedValues,'methodUsed'="series",
-            'degree'=result[3],
-            'tailBound'=`if`(result[7]="majorant",result[4],-1),
-            'doubledDegreeDifference'=
-                `if`(result[7]="doubled_degree",result[4],-1),
-            'convergenceTest'=result[7],
-            'roundingError'=max(result[5],outputRounding),
-            'workingDigits'=result[6]);
-    end if;
-    return presentedValues;
+    series := PredefinedSeries("LauricellaFD",[a,op(b),c],nops(x));
+    sourceDigits := HypergeometricSourceDigits(series,x,[],0);
+    oldDigits := Digits; Digits := max(digits+14,sourceDigits);
+    try
+        guardDigits := LauricellaFDWorkingGuardDigits(b,x,a,c);
+        result := LauricellaFDFastSeriesChecked(a,b,c,x,digits,
+            maximumDegree,guardDigits);
+        if not result[2] then
+            error "the grouped Lauricella FD boundary series did not converge or lost precision through degree %1",maximumDegree;
+        end if;
+        presentedValues := map(entry->evalf[digits](entry),result[1]);
+        outputRounding := max(seq(
+            LauricellaFDRoundingAllowance(value,digits),
+            value in convert(presentedValues,list)));
+        if returnDiagnostics then
+            answer := Record('hpType'="LauricellaFDInitialVector",
+                'value'=presentedValues,'methodUsed'="series",
+                'degree'=result[3],
+                'tailBound'=`if`(result[7]="majorant",result[4],-1),
+                'doubledDegreeDifference'=
+                    `if`(result[7]="doubled_degree",result[4],-1),
+                'convergenceTest'=result[7],
+                'roundingError'=max(result[5],outputRounding),
+                'workingDigits'=result[6]);
+        else
+            answer := presentedValues;
+        end if;
+    finally
+        Digits := oldDigits;
+    end try;
+    return answer;
 end proc;
 
 LauricellaFDEulerValue := proc(a,b::list,c,x::list,digits::posint)
@@ -4439,7 +6022,7 @@ LauricellaFDPfaffianValue := proc(
     finally
         Digits := oldDigits;
     end try;
-    return [result,transport,initialData[3],initialData[4]];
+    return [result,transport,initialData[3],initialData[4],continued];
 end proc;
 
 LauricellaFD := proc(
@@ -4447,32 +6030,38 @@ LauricellaFD := proc(
     {digits := 50, epsilon := 0, epsilonOrder := "none", poleOrder := "automatic",
      branchSide := -1, waypoints := [], maximumSeed := 0, frobeniusOrder := 0,
      maximumDegree := 260, maximumSteps := 20000, verbose := false,
-     method := "auto", verifyReverse := false, returnDiagnostics := false}
+     method := "auto", verifyReverse := false, returnDiagnostics := false,
+     returnDerivatives := false}
 )
     local series, exactCompressed, activeB, activeX,
           exactA, exactB, exactC, numericA, numericC, estimate,
           seriesResult, pfaffianResult, result, oldDigits, startTime,
           guardDigits, qBound, seriesOperationAllowed, eulerSucceeded, i,
           terminationDegree, seriesEffectiveDegree, outputRounding,
-          totalErrorEstimate;
+          totalErrorEstimate,derivatives,shiftedB,derivativeValue,
+          sourceDigits;
     startTime := time();
     if nops(b) <> nops(x) then error "b and x must have the same length"; end if;
     if not member(method,["auto","series","euler","pfaffian","generic"]) then
         error "method must be auto, series, euler, pfaffian, or generic";
     end if;
     series := PredefinedSeries("LauricellaFD",[a,op(b),c],nops(x));
-    if epsilonOrder <> "none" or method = "generic" then
-        result := FinishPredefined(series,x,digits,epsilon,epsilonOrder,poleOrder,
+    if epsilonOrder <> "none" then
+        return FinishPredefined(series,x,digits,epsilon,epsilonOrder,poleOrder,
             branchSide,waypoints,maximumSeed,frobeniusOrder,maximumDegree,
-            maximumSteps,verbose);
-        if returnDiagnostics then
-            return MakeLauricellaFDEvaluationRecord(result,"generic",-1,-1,
-                evalf(time()-startTime),-1,nops(x),-1);
-        end if;
-        return result;
+            maximumSteps,verbose,"auto",returnDiagnostics,returnDerivatives);
+    elif method = "generic" then
+        return FinishPredefined(series,x,digits,epsilon,epsilonOrder,poleOrder,
+            branchSide,waypoints,maximumSeed,frobeniusOrder,maximumDegree,
+            maximumSteps,verbose,"generic",returnDiagnostics,returnDerivatives);
     end if;
     if digits < 1 then error "digits must be positive"; end if;
     oldDigits := Digits;
+    # Inspect arbitrary-precision Float mantissas before any parameter
+    # arithmetic.  Otherwise lowering Digits can round a regular parameter
+    # such as -100+10^(-100)+I*10^(-100) onto, or towards, a pole.
+    sourceDigits := HypergeometricSourceDigits(series,x,waypoints,epsilon);
+    Digits := max(digits+14,sourceDigits);
     try
         exactA := series:-upperParameters[1]:-constant+
             series:-upperParameters[1]:-slope*epsilon;
@@ -4481,7 +6070,7 @@ LauricellaFD := proc(
             i=2..nops(series:-upperParameters))];
         exactC := series:-lowerParameters[1]:-constant+
             series:-lowerParameters[1]:-slope*epsilon;
-        if nops(waypoints)=0 then
+        if nops(waypoints)=0 and not returnDerivatives then
             # Group the raw inputs exactly once.  Grouping rounded parameters
             # or coordinates can erase a small difference multiplied by a
             # large exponent and can also give b and x different dimensions.
@@ -4499,6 +6088,34 @@ LauricellaFD := proc(
         activeB := map(evalf,exactCompressed[1]);
         activeX := map(evalf,exactCompressed[2]);
         numericA := evalf(exactA); numericC := evalf(exactC);
+        # The exact a=c identity cancels the common Pochhammer row before any
+        # lower-parameter pole test.  In particular, a=c=-N defines the
+        # regular product reduction even though c alone is nonpositive.
+        if member(method,["auto","series"]) and
+           nops(waypoints)=0 and branchSide=-1 and
+           evalb(exactA=exactC) and
+           LauricellaFDClosedFormApplicable(exactCompressed[2]) then
+            result := ChopValue(LauricellaFDClosedFormValue(
+                exactCompressed[1],exactCompressed[2]),digits);
+            result := evalf[digits](result);
+            derivatives := [];
+            if returnDerivatives then
+                derivatives := [seq(evalf[digits](ChopValue(
+                    result*activeB[i]/(1-activeX[i]),digits)),
+                    i=1..nops(activeX))];
+            end if;
+            if returnDiagnostics then
+                outputRounding := LauricellaFDRoundingAllowance(result,digits);
+                return MakeLauricellaFDEvaluationRecord(result,
+                    "closed_form",0,outputRounding,
+                    evalf(time()-startTime),0,nops(activeX),0,
+                    "exact_cancellation",0,0,outputRounding,derivatives);
+            end if;
+            if returnDerivatives then
+                return Vector([result,op(derivatives)],datatype=anything);
+            end if;
+            return result;
+        end if;
         if not LauricellaFDLowerParameterRegular(exactC) then
             error "the defining Lauricella FD function has a singular lower parameter";
         end if;
@@ -4506,28 +6123,16 @@ LauricellaFD := proc(
             result := evalf[digits](1);
             if returnDiagnostics then
                 return MakeLauricellaFDEvaluationRecord(result,
-                    "exact_reduction",0,0,evalf(time()-startTime),0,0,0);
+                    "exact_reduction",0,0,evalf(time()-startTime),0,0,0,
+                    "exact",0,0,0,[]);
             end if;
-            return result;
-        end if;
-        if method="auto" and nops(waypoints)=0 and branchSide=-1 and
-           evalb(exactA=exactC) and
-           LauricellaFDClosedFormApplicable(exactCompressed[2]) then
-            result := ChopValue(LauricellaFDClosedFormValue(
-                exactCompressed[1],exactCompressed[2]),digits);
-            result := evalf[digits](result);
-            if returnDiagnostics then
-                outputRounding := LauricellaFDRoundingAllowance(result,digits);
-                return MakeLauricellaFDEvaluationRecord(result,
-                    "closed_form",0,outputRounding,
-                    evalf(time()-startTime),0,nops(activeX),0,
-                    "not_applicable",-1,-1,outputRounding);
-            end if;
+            if returnDerivatives then return Vector([result],datatype=anything); end if;
             return result;
         end if;
         estimate := LauricellaFDEstimatedDegree(activeX,digits);
-        if nops(waypoints) > 0 and member(method,["series","euler"]) then
-            error "series and Euler methods evaluate the principal origin germ and cannot honour explicit waypoints; use method=pfaffian";
+        if (nops(waypoints)>0 or branchSide<>-1) and
+           member(method,["series","euler"]) then
+            error "series and Euler methods evaluate the principal origin germ and cannot honour an explicit path or branch-side request; use method=pfaffian";
         end if;
         qBound := max(seq(abs(activeX[i]),i=1..nops(activeX)));
         terminationDegree := LauricellaFDTerminationDegree(exactA);
@@ -4540,7 +6145,7 @@ LauricellaFD := proc(
             error "the specialized Lauricella FD series exceeds its hard operation limit";
         end if;
         if method = "series" or
-           (method = "auto" and nops(waypoints)=0 and
+           (method = "auto" and nops(waypoints)=0 and branchSide=-1 and
             seriesOperationAllowed and
             (LauricellaFDSeriesTerminates(exactA) or qBound < 1)) then
             seriesResult := LauricellaFDFastSeriesChecked(exactA,
@@ -4549,6 +6154,11 @@ LauricellaFD := proc(
             if seriesResult[2] then
                 result := ChopValue(seriesResult[1][1],digits);
                 result := evalf[digits](result);
+                derivatives := [];
+                if returnDerivatives then
+                    derivatives := [seq(evalf[digits](ChopValue(
+                        seriesResult[1][i+1],digits)),i=1..nops(activeX))];
+                end if;
                 if returnDiagnostics then
                     outputRounding := LauricellaFDRoundingAllowance(result,digits);
                     totalErrorEstimate := max(seriesResult[4],outputRounding);
@@ -4558,7 +6168,10 @@ LauricellaFD := proc(
                         seriesResult[7],
                         `if`(seriesResult[7]="majorant",seriesResult[4],-1),
                         `if`(seriesResult[7]="doubled_degree",seriesResult[4],-1),
-                        max(seriesResult[5],outputRounding));
+                        max(seriesResult[5],outputRounding),derivatives);
+                end if;
+                if returnDerivatives then
+                    return Vector([result,op(derivatives)],datatype=anything);
                 end if;
                 return result;
             end if;
@@ -4570,13 +6183,27 @@ LauricellaFD := proc(
             result := LauricellaFDEulerValue(numericA,activeB,numericC,activeX,digits);
             result := ChopValue(result,digits);
             result := evalf[digits](result);
+            derivatives := [];
+            if returnDerivatives then
+                for i to nops(activeX) do
+                    shiftedB := subsop(i=activeB[i]+1,activeB);
+                    derivativeValue := numericA*activeB[i]/numericC*
+                        LauricellaFDEulerValue(numericA+1,shiftedB,
+                            numericC+1,activeX,digits);
+                    derivatives := [op(derivatives),evalf[digits](
+                        ChopValue(derivativeValue,digits))];
+                end do;
+            end if;
             if returnDiagnostics then
                 return MakeLauricellaFDEvaluationRecord(result,
                     "euler",-1,-1,evalf(time()-startTime),estimate,
-                    nops(activeX),0);
+                    nops(activeX),0,"not_applicable",-1,-1,-1,derivatives);
+            end if;
+            if returnDerivatives then
+                return Vector([result,op(derivatives)],datatype=anything);
             end if;
             return result;
-        elif method = "auto" and nops(waypoints)=0 and
+        elif method = "auto" and nops(waypoints)=0 and branchSide=-1 and
              LauricellaFDEulerApplicable(numericA,activeB,numericC,activeX) and
              LauricellaFDEulerCostSafe(activeB,digits) then
             eulerSucceeded := false;
@@ -4593,10 +6220,24 @@ LauricellaFD := proc(
             if eulerSucceeded then
                 result := ChopValue(result,digits);
                 result := evalf[digits](result);
+                derivatives := [];
+                if returnDerivatives then
+                    for i to nops(activeX) do
+                        shiftedB := subsop(i=activeB[i]+1,activeB);
+                        derivativeValue := numericA*activeB[i]/numericC*
+                            LauricellaFDEulerValue(numericA+1,shiftedB,
+                                numericC+1,activeX,digits);
+                        derivatives := [op(derivatives),evalf[digits](
+                            ChopValue(derivativeValue,digits))];
+                    end do;
+                end if;
                 if returnDiagnostics then
                     return MakeLauricellaFDEvaluationRecord(result,
                         "euler",-1,-1,evalf(time()-startTime),estimate,
-                        nops(activeX),0);
+                        nops(activeX),0,"not_applicable",-1,-1,-1,derivatives);
+                end if;
+                if returnDerivatives then
+                    return Vector([result,op(derivatives)],datatype=anything);
                 end if;
                 return result;
             end if;
@@ -4606,6 +6247,11 @@ LauricellaFD := proc(
             digits,maximumDegree,guardDigits,branchSide,waypoints,frobeniusOrder,
             maximumSteps,verifyReverse,verbose);
         result := evalf[digits](pfaffianResult[1]);
+        derivatives := [];
+        if returnDerivatives then
+            derivatives := [seq(evalf[digits](ChopValue(
+                pfaffianResult[5][i+1],digits)),i=1..nops(activeX))];
+        end if;
         if returnDiagnostics then
             outputRounding := LauricellaFDRoundingAllowance(result,digits);
             return MakeLauricellaFDEvaluationRecord(result,"pfaffian",
@@ -4615,7 +6261,10 @@ LauricellaFD := proc(
                 outputRounding),
                 evalf(time()-startTime),estimate,nops(activeX),
                 nops(pfaffianResult[2]:-factors),"not_applicable",-1,-1,
-                outputRounding);
+                outputRounding,derivatives);
+        end if;
+        if returnDerivatives then
+            return Vector([result,op(derivatives)],datatype=anything);
         end if;
     finally
         Digits := oldDigits;
@@ -4682,12 +6331,14 @@ HypFunctionExpand := proc(
 )
     local parsed;
     parsed := ParseFunctionCall(functionSpec, epsilonName);
-    return HypExpand(parsed[1], parsed[2], epsilonOrder, digits,
-        'poleOrder' = poleOrder, 'interpolationGuard' = interpolationGuard,
-        'branchSide' = branchSide, 'waypoints' = waypoints,
-        'maximumSeed' = maximumSeed, 'frobeniusOrder' = frobeniusOrder,
-        'maximumDegree' = maximumDegree, 'maximumSteps' = maximumSteps,
-        'verbose' = verbose);
+    return HypExpand(parsed[1],parsed[2],epsilonOrder,digits,
+        parse("poleOrder")=poleOrder,
+        parse("interpolationGuard")=interpolationGuard,
+        parse("branchSide")=branchSide,parse("waypoints")=waypoints,
+        parse("maximumSeed")=maximumSeed,
+        parse("frobeniusOrder")=frobeniusOrder,
+        parse("maximumDegree")=maximumDegree,
+        parse("maximumSteps")=maximumSteps,parse("verbose")=verbose);
 end proc;
 
 end module:

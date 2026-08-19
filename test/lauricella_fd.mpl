@@ -80,6 +80,52 @@ CheckTrue("exact near-pole lower parameter remains regular",evalb(evalf[30](abs(
 nearTerminating := LauricellaFD(-3+1/10^40,[1/4],7/6,[1/10],'digits'=15,'method'="series",'maximumDegree'=80,'returnDiagnostics'=true):
 CheckTrue("near-integral upper parameter does not terminate",evalb(nearTerminating:-degree>3)):
 
+# Stored arbitrary-precision floats must retain a displacement from a lower
+# pole before the public evaluator lowers Digits.  One-variable FD is checked
+# against the independent pFq kernel, including the first derivative.
+fdSourceDigits := Digits:
+Digits := 220:
+fdNearRealExact := -100+1/10^100:
+fdNearDiagonalExact := -100+1/10^100+I/10^100:
+fdNearMinusTwoExact := -2+1/10^80+I/10^80:
+fdNearRealFloat := evalf(fdNearRealExact):
+fdNearDiagonalFloat := evalf(fdNearDiagonalExact):
+fdNearMinusTwoFloat := evalf(fdNearMinusTwoExact):
+Digits := fdSourceDigits:
+fdNearRealReference := Hypergeometric2F1(1/3,2/5,fdNearRealExact,1/100,'digits'=24,'method'="series",'returnDerivatives'=true):
+fdNearDiagonalReference := Hypergeometric2F1(1/3,2/5,fdNearDiagonalExact,1/100,'digits'=24,'method'="series",'returnDerivatives'=true):
+fdNearMinusTwoReference := Hypergeometric2F1(1/3,2/5,fdNearMinusTwoExact,1/10,'digits'=24,'method'="series",'returnDerivatives'=true):
+fdNearRealFloatResult := LauricellaFD(1/3,[2/5],fdNearRealFloat,[1/100],'digits'=20,'method'="series",'maximumDegree'=260,'returnDiagnostics'=true,'returnDerivatives'=true):
+fdNearDiagonalExactResult := LauricellaFD(1/3,[2/5],fdNearDiagonalExact,[1/100],'digits'=20,'method'="series",'maximumDegree'=260,'returnDiagnostics'=true,'returnDerivatives'=true):
+fdNearDiagonalFloatResult := LauricellaFD(1/3,[2/5],fdNearDiagonalFloat,[1/100],'digits'=20,'method'="series",'maximumDegree'=260,'returnDiagnostics'=true,'returnDerivatives'=true):
+fdNearMinusTwoFloatResult := LauricellaFD(1/3,[2/5],fdNearMinusTwoFloat,[1/10],'digits'=20,'method'="series",'maximumDegree'=160,'returnDiagnostics'=true,'returnDerivatives'=true):
+CheckTrue("stored-float real near-pole FD value",evalb(evalf[30](abs(fdNearRealFloatResult:-value-fdNearRealReference[1])/max(1,abs(fdNearRealReference[1])))<1.e-18)):
+CheckTrue("stored-float real near-pole FD derivative",evalb(evalf[30](abs(fdNearRealFloatResult:-derivatives[1]-fdNearRealReference[2])/max(1,abs(fdNearRealReference[2])))<1.e-18)):
+CheckTrue("exact diagonal near-pole FD value",evalb(evalf[30](abs(fdNearDiagonalExactResult:-value-fdNearDiagonalReference[1])/max(1,abs(fdNearDiagonalReference[1])))<1.e-18)):
+CheckTrue("stored-float diagonal near-pole FD value",evalb(evalf[30](abs(fdNearDiagonalFloatResult:-value-fdNearDiagonalReference[1])/max(1,abs(fdNearDiagonalReference[1])))<1.e-18)):
+CheckTrue("stored-float diagonal near-pole FD derivative",evalb(evalf[30](abs(fdNearDiagonalFloatResult:-derivatives[1]-fdNearDiagonalReference[2])/max(1,abs(fdNearDiagonalReference[2])))<1.e-18)):
+CheckTrue("stored-float diagonal c=-2 FD value",evalb(evalf[30](abs(fdNearMinusTwoFloatResult:-value-fdNearMinusTwoReference[1])/max(1,abs(fdNearMinusTwoReference[1])))<1.e-18)):
+CheckTrue("near-pole FD evaluates past the lower-pole index",evalb(fdNearRealFloatResult:-degree>100 and fdNearDiagonalExactResult:-degree>100 and fdNearDiagonalFloatResult:-degree>100)):
+CheckTrue("near-pole FD reports final-rounding scale",evalb(fdNearDiagonalFloatResult:-errorEstimate>=1.e-20*max(1,abs(fdNearDiagonalFloatResult:-value)) and fdNearDiagonalFloatResult:-errorEstimate<1.e-17*max(1,abs(fdNearDiagonalFloatResult:-value)))):
+fdNearInitial := LauricellaFDInitialVector(1/3,[2/5],fdNearDiagonalFloat,[1/100],'digits'=20,'maximumDegree'=260,'returnDiagnostics'=true):
+CheckTrue("stored-float near-pole FD initial vector",evalb(fdNearInitial:-degree>100 and evalf[30](abs(fdNearInitial:-value[1]-fdNearDiagonalReference[1])/max(1,abs(fdNearDiagonalReference[1])))<1.e-18 and evalf[30](abs(fdNearInitial:-value[2]-fdNearDiagonalReference[2])/max(1,abs(fdNearDiagonalReference[2])))<1.e-18)):
+fdNearDegreeRejected := false:
+try LauricellaFD(1/3,[2/5],fdNearDiagonalFloat,[1/100],'digits'=20,'method'="series",'maximumDegree'=100): catch: fdNearDegreeRejected := evalb(StringTools:-Search("did not converge",convert(lastexception[2],string))>0): end try:
+CheckTrue("near-pole FD fails closed below the pole index",fdNearDegreeRejected):
+
+# The same source-precision path must fail before evaluation when the guard
+# exceeds its public 4096-digit conditioning cap.
+Digits := 17000:
+fdCapRealFloat := evalf(-2+1/10^5000):
+fdCapDiagonalFloat := evalf(-2+1/10^5000+I/10^5000):
+Digits := fdSourceDigits:
+fdCapRealRejected := false:
+try LauricellaFD(1/3,[2/5],fdCapRealFloat,[1/10],'digits'=15,'method'="series",'maximumDegree'=20): catch: fdCapRealRejected := evalb(StringTools:-Search("conditioning guard exceeds 4096 digits",convert(lastexception[2],string))>0): end try:
+CheckTrue("stored-float real FD conditioning cap",evalb(fdCapRealRejected and Digits=fdSourceDigits)):
+fdCapDiagonalRejected := false:
+try LauricellaFD(1/3,[2/5],fdCapDiagonalFloat,[1/10],'digits'=15,'method'="series",'maximumDegree'=20): catch: fdCapDiagonalRejected := evalb(StringTools:-Search("conditioning guard exceeds 4096 digits",convert(lastexception[2],string))>0): end try:
+CheckTrue("stored-float diagonal FD conditioning cap",evalb(fdCapDiagonalRejected and Digits=fdSourceDigits)):
+
 largeB := 10^40:
 largeCancellation := LauricellaFD(1/3,[largeB,-largeB+1],7/6,[1/2,1/2],'digits'=15,'returnDiagnostics'=true):
 largeCancellationReference := evalf[40](1.214325323943790805909970844890465624277517422437454637):

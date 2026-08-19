@@ -22,7 +22,8 @@ function Invoke-MapleTest([string]$Script, [string]$Marker) {
         Pop-Location
     }
     $Output | ForEach-Object { Write-Host $_ }
-    if ($ExitCode -ne 0 -or ($Output -join "`n") -notmatch [regex]::Escape($Marker)) {
+    $JoinedOutput = $Output -join "`n"
+    if ($ExitCode -ne 0 -or $JoinedOutput -notmatch [regex]::Escape($Marker) -or $JoinedOutput -match '(?m)^Error,') {
         throw "Maple test failed: $Script"
     }
 }
@@ -30,6 +31,7 @@ function Invoke-MapleTest([string]$Script, [string]$Marker) {
 Invoke-MapleTest "runtests.mpl" "All regular tests passed."
 Invoke-MapleTest "monodromy_engine.mpl" "All Pfaffian monodromy engine tests passed."
 Invoke-MapleTest "lauricella_fd.mpl" "All Lauricella FD tests passed."
+Invoke-MapleTest "hypergeometric_fast.mpl" "All fast hypergeometric tests passed."
 if ($AGM) {
     Invoke-MapleTest "agm.mpl" "AGM test passed."
 }
@@ -42,4 +44,5 @@ if ($Monodromy) {
 if ($Benchmarks) {
     Invoke-MapleTest "benchmark_pfaffian.mpl" "Pfaffian benchmark completed."
     Invoke-MapleTest "benchmark_lauricella_fd.mpl" "Lauricella FD benchmark completed."
+    Invoke-MapleTest "benchmark_hypergeometric_fast.mpl" "Fast hypergeometric benchmark completed."
 }
