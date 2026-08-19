@@ -25,6 +25,7 @@ export
     HornG1, HornG2, HornG3,
     HornH1, HornH2, HornH3, HornH4, HornH5, HornH6, HornH7,
     LauricellaFA, LauricellaFB, LauricellaFC, LauricellaFD,
+    LauricellaFDPfaffianSystem, LauricellaFDInitialVector,
     FunctionSeries;
 
 local
@@ -46,6 +47,7 @@ local
     SeriesVector, DirectSeriesValue, BoundarySeries,
     Convolve, PolynomialOnLine, EquationMatrixOnLine,
     ReductionSeries, RestrictedMatrixSeries,
+    RationalTaylorSeries,
     FrobeniusSolutionCoefficients, EvaluateFrobeniusSeries,
     IntegrateSegmentFrobenius, NormaliseWaypoints,
     PolyExpression, PivotPolynomialMatrix, PivotDeterminantExpression,
@@ -61,7 +63,16 @@ local
     UserRestrictedMatrixSeries, ValidateMeridianComponent,
     EstimatePoleOrder, ChopValue, IsFiniteNumber,
     PredefinedSeries, UnitWeight, WeightRows,
-    FinishPredefined, ConvertEpsilonExpression, ParseFunctionCall;
+    FinishPredefined, ConvertEpsilonExpression, ParseFunctionCall,
+    LauricellaFDCompressVariables, LauricellaFDEstimatedDegree,
+    LauricellaFDFastSeriesVector, LauricellaFDEulerApplicable,
+    LauricellaFDEulerCostSafe, LauricellaFDEulerValue,
+    LauricellaFDWorkingGuardDigits, LauricellaFDFastSeriesChecked,
+    LauricellaFDSeriesTerminates, LauricellaFDTerminationDegree,
+    LauricellaFDLowerParameterRegular,
+    LauricellaFDClosedFormApplicable, LauricellaFDClosedFormValue,
+    LauricellaFDSeriesOperationCount, LauricellaFDRoundingAllowance,
+    LauricellaFDPfaffianValue;
 
 local
     MakeAffineRecord, MakeHornRecord, MakeNumericHornRecord,
@@ -74,7 +85,7 @@ local
     MakePrecisionAttemptRecord, MakeTransportDiagnosticsRecord,
     MakeMeridianMetadataRecord, MakeRelationRecord,
     MakeGeneratorBundleRecord, MakeUserPfaffianRecord,
-    MakeExactFlatnessRecord;
+    MakeExactFlatnessRecord, MakeLauricellaFDEvaluationRecord;
 
 MakeAffineRecord := proc(p1, p2)
     return Record('hpType' = "AffineParameter", 'constant' = p1, 'slope' = p2);
@@ -213,11 +224,23 @@ MakeGeneratorBundleRecord := proc(p1, p2, p3)
     return Record('loops' = p1, 'labels' = p2, 'transports' = p3);
 end proc;
 
-MakeUserPfaffianRecord := proc(p1, p2, p3, p4, p5, p6, p7)
+MakeUserPfaffianRecord := proc(p1, p2, p3, p4, p5, p6, p7,
+                              p8 := "generic", p9 := [])
     return Record('hpType' = "UserPfaffianSystem",
         'connection' = p1, 'variables' = p2, 'rank' = p3,
         'basis' = p4, 'digits' = p5, 'declaredSingularFactors' = p6,
-        'exactFlatness' = p7);
+        'exactFlatness' = p7, 'family' = p8, 'familyParameters' = p9);
+end proc;
+
+MakeLauricellaFDEvaluationRecord := proc(p1,p2,p3,p4,p5,p6,p7,p8,
+                                        p9 := "not_applicable",p10 := -1,
+                                        p11 := -1,p12 := -1)
+    return Record('hpType'="LauricellaFDEvaluation",'value'=p1,
+        'methodUsed'=p2,'degree'=p3,'errorEstimate'=p4,
+        'elapsedSeconds'=p5,'estimatedDegree'=p6,
+        'compressedDimension'=p7,'transportFactors'=p8,
+        'convergenceTest'=p9,'tailBound'=p10,
+        'doubledDegreeDifference'=p11,'roundingError'=p12);
 end proc;
 
 MakeExactFlatnessRecord := proc(p1, p2, p3)
@@ -1343,7 +1366,8 @@ ChooseBasepoint := proc(
     if radius <= 0 then error "radius must be positive"; end if;
     effectiveDigits := `if`(digits = 0, system:-digits, digits);
     n := SystemNVariables(system);
-    oldDigits := Digits; Digits := effectiveDigits + 14;
+    oldDigits := Digits;
+    Digits := max(oldDigits,system:-digits,effectiveDigits+14);
     try
         for attempt to maximumAttempts do
             scale := evalf(radius * (0.55 + 0.4*attempt/maximumAttempts));
@@ -1465,6 +1489,21 @@ SingularFactors := proc(system, {variableNames := []})
     end if;
     if system:-hpType = "UserPfaffianSystem" then
         originalVariables := system:-variables;
+        if system:-family = "LauricellaFD" then
+            # The explicit constructor already supplies the complete
+            # square-free divisor x_i(1-x_i)prod_{i<j}(x_i-x_j).  Expanding
+            # the repeated denominators of all (n+1)^2 connection entries is
+            # exponentially wasteful in seven or more variables.
+            factorList := system:-declaredSingularFactors;
+            if variables <> originalVariables then
+                factorList := [seq(subs(seq(originalVariables[i]=variables[i],
+                    i=1..nops(variables)),entry),entry in factorList)];
+            end if;
+            determinantExpression := mul(entry,entry in factorList);
+            multiplicities := [1$nops(factorList)];
+            return MakeSingularRecord(variables,determinantExpression,
+                factorList,multiplicities);
+        end if;
         determinantExpression := 1;
         for matrixValue in system:-connection do
             for row to system:-rank do
@@ -1513,40 +1552,48 @@ RestrictedSingularRoots := proc(
     {digits := 0}
 )
     local effectiveDigits, oldDigits, divisor, tau, direction,
-          restricted, numeratorExpression, rawRoots, roots,
+          factorValue, restricted, numeratorExpression, rawRoots, roots,
           rootValue, duplicate, existing, i;
     if nops(segmentStart) <> SystemNVariables(system) or
        nops(segmentEnd) <> SystemNVariables(system) then
         error "a segment endpoint has the wrong length";
     end if;
     effectiveDigits := `if`(digits = 0, system:-digits, digits);
-    oldDigits := Digits; Digits := effectiveDigits + 14;
+    oldDigits := Digits;
+    Digits := max(oldDigits,system:-digits,effectiveDigits+14);
     try
         divisor := SingularFactors(system);
         tau := parse("hp_tau");
         direction := [seq(segmentEnd[i] - segmentStart[i],
             i = 1 .. nops(segmentStart))];
-        restricted := expand(subs(seq(divisor:-variables[i] =
-            segmentStart[i] + tau * direction[i],
-            i = 1 .. nops(direction)), divisor:-determinant));
-        numeratorExpression := numer(normal(restricted));
-        if evalb(numeratorExpression = 0) then
-            error "the entire segment is contained in the selected singular divisor";
-        elif not has(numeratorExpression, tau) then
-            return [];
-        end if;
-        rawRoots := [fsolve(numeratorExpression = 0, tau, complex)];
         roots := [];
-        for rootValue in rawRoots do
-            rootValue := evalf(rootValue);
-            if not IsFiniteNumber(rootValue) then next; end if;
-            duplicate := false;
-            for existing in roots do
-                if abs(rootValue - existing) < 10^(-max(8, iquo(effectiveDigits, 2))) then
-                    duplicate := true; break;
-                end if;
+        # Solve each square-free divisor component separately.  Solving the
+        # expanded determinant makes repeated denominator factors look like a
+        # high-multiplicity polynomial; fsolve then returns clouds of spurious
+        # nearby roots and can force thousands of unnecessary Taylor patches.
+        for factorValue in divisor:-factors do
+            restricted := expand(subs(seq(divisor:-variables[i] =
+                segmentStart[i] + tau * direction[i],
+                i = 1 .. nops(direction)), factorValue));
+            numeratorExpression := numer(normal(restricted));
+            if evalb(numeratorExpression = 0) then
+                error "the entire segment is contained in the selected singular divisor";
+            elif not has(numeratorExpression, tau) then
+                next;
+            end if;
+            rawRoots := [fsolve(numeratorExpression = 0, tau, complex)];
+            for rootValue in rawRoots do
+                rootValue := evalf(rootValue);
+                if not IsFiniteNumber(rootValue) then next; end if;
+                duplicate := false;
+                for existing in roots do
+                    if abs(rootValue - existing) <
+                       10^(-max(8, iquo(effectiveDigits, 2))) then
+                        duplicate := true; break;
+                    end if;
+                end do;
+                if not duplicate then roots := [op(roots), rootValue]; end if;
             end do;
-            if not duplicate then roots := [op(roots), rootValue]; end if;
         end do;
     finally
         Digits := oldDigits;
@@ -1793,11 +1840,22 @@ SeriesVector := proc(
     local values, tolerance, consecutiveSmall, consecutiveGrowth,
           previousNorm, degree, shell, index, coefficient,
           basisIndex, derivative, term, variable, exponent,
-          shellNorm, valueNorm, allLargeEnough, i;
+          shellNorm, valueNorm, allLargeEnough, termBudget,
+          shellTermCount, i;
     values := Vector(nops(basis), datatype = anything);
     tolerance := evalf(10^(-(digits + 8)));
     consecutiveSmall := 0; consecutiveGrowth := 0; previousNorm := infinity;
+    termBudget := 0;
     for degree from 0 to maximumDegree do
+        shellTermCount := binomial(degree+series:-nvariables-1,
+            series:-nvariables-1);
+        if termBudget+shellTermCount > 1000000 then
+            # A generic multi-index expansion above this budget is not a
+            # practical evaluator.  Return control to the Pfaffian dispatcher
+            # instead of materialising millions of compositions.
+            return [values,false,degree];
+        end if;
+        termBudget := termBudget+shellTermCount;
         shell := Vector(nops(basis), datatype = anything);
         for index in Compositions(degree, series:-nvariables) do
             try
@@ -2011,6 +2069,35 @@ ReductionSeries := proc(system, center::list, direction::list, order::nonnegint)
     return reductions;
 end proc;
 
+RationalTaylorSeries := proc(expressionValue,z::symbol,order::nonnegint)
+    local rationalValue, numeratorValue, denominatorValue,
+          numeratorCoefficients, denominatorCoefficients, coefficients,
+          degree, convolutionDegree, value;
+    rationalValue := normal(expressionValue);
+    numeratorValue := expand(numer(rationalValue));
+    denominatorValue := expand(denom(rationalValue));
+    numeratorCoefficients := Array(0..order,fill=0);
+    denominatorCoefficients := Array(0..order,fill=0);
+    coefficients := Array(0..order,fill=0);
+    for degree from 0 to order do
+        numeratorCoefficients[degree] := evalf(coeff(numeratorValue,z,degree));
+        denominatorCoefficients[degree] := evalf(coeff(denominatorValue,z,degree));
+    end do;
+    if denominatorCoefficients[0] = 0 then
+        error "a Taylor centre lies on the singular locus of the user Pfaffian connection";
+    end if;
+    coefficients[0] := evalf(numeratorCoefficients[0]/denominatorCoefficients[0]);
+    for degree to order do
+        value := numeratorCoefficients[degree];
+        for convolutionDegree to degree do
+            value := value-denominatorCoefficients[convolutionDegree]*
+                coefficients[degree-convolutionDegree];
+        end do;
+        coefficients[degree] := evalf(value/denominatorCoefficients[0]);
+    end do;
+    return coefficients;
+end proc;
+
 UserRestrictedMatrixSeries := proc(
     system,
     center::list,
@@ -2029,16 +2116,11 @@ UserRestrictedMatrixSeries := proc(
                 restrictedEntry := subs(seq(system:-variables[i]=
                     center[i]+z*direction[i],i=1..nops(center)),
                     system:-connection[variable][row,column]);
-                try
-                    expansionValue := convert(series(restrictedEntry,z=0,
-                        order+1),polynom);
-                catch:
-                    error "a Taylor centre lies on the singular locus of the user Pfaffian connection";
-                end try;
+                expansionValue := RationalTaylorSeries(restrictedEntry,z,order);
                 for degree from 0 to order do
                     coefficients[degree+1][row,column] :=
                         coefficients[degree+1][row,column] +
-                        direction[variable]*evalf(coeff(expansionValue,z,degree));
+                        direction[variable]*expansionValue[degree];
                 end do;
             end do;
         end do;
@@ -3741,16 +3823,804 @@ LauricellaFC := proc(
         frobeniusOrder, maximumDegree, maximumSteps, verbose);
 end proc;
 
+# Compress zero and exactly repeated variables before selecting an evaluation
+# method.  The identity follows immediately from the Euler integrand (or from
+# the defining series): equal arguments combine their b parameters.
+LauricellaFDCompressVariables := proc(b::list, x::list)
+    local compressedB, compressedX, filteredB, filteredX,
+          value, position, found, i;
+    if nops(b) <> nops(x) then error "b and x must have the same length"; end if;
+    compressedB := []; compressedX := [];
+    for i to nops(x) do
+        if evalb(x[i] = 0) then next; end if;
+        found := 0;
+        for position to nops(compressedX) do
+            if evalb(x[i] = compressedX[position]) then
+                found := position;
+                break;
+            end if;
+        end do;
+        if found = 0 then
+            compressedX := [op(compressedX),x[i]];
+            compressedB := [op(compressedB),b[i]];
+        else
+            value := compressedB[found] + b[i];
+            compressedB := subsop(found=value,compressedB);
+        end if;
+    end do;
+    filteredB := []; filteredX := [];
+    for position to nops(compressedB) do
+        if evalb(compressedB[position]=0) then next; end if;
+        filteredB := [op(filteredB),compressedB[position]];
+        filteredX := [op(filteredX),compressedX[position]];
+    end do;
+    return [filteredB,filteredX];
+end proc;
+
+LauricellaFDEstimatedDegree := proc(x::list, digits::posint)
+    local rho, value;
+    if nops(x) = 0 then return 0; end if;
+    rho := max(seq(evalf(abs(value)),value in x));
+    if rho = 0 then return 8; end if;
+    if rho >= 1 then return infinity; end if;
+    return max(12,ceil((digits+12)*evalf(ln(10))/(-evalf(ln(rho)))+12));
+end proc;
+
+LauricellaFDSeriesOperationCount := proc(numberOfVariables::nonnegint,
+                                         maximumDegree::nonnegint)
+    return 2*(numberOfVariables*maximumDegree+
+        maximumDegree*(maximumDegree+1)/2);
+end proc;
+
+# A conservative final-rounding allowance for a value returned with the
+# requested number of decimal significant digits.  Internal truncation and
+# transport diagnostics are computed at guard precision; this term prevents
+# the public error estimate from ignoring the final presentation rounding.
+LauricellaFDRoundingAllowance := proc(value,digits::posint)
+    return evalf[digits+4](10^(1-digits)*max(abs(value),1));
+end proc;
+
+# Extra working digits required by large parameters, near-integral
+# parameters, and small distances to x_i=1 or x_i=x_j.  Equality tests are
+# performed on the raw input before any evalf call; the returned guard is used
+# only for subsequent arithmetic.
+LauricellaFDWorkingGuardDigits := proc(b::list,x::list,a := 0,c := 1)
+    local oldDigits, parameterMagnitude, scale, ratio, candidate,
+          nearestInteger, parameterValue, magnitudeGuard, separationGuard,
+          guardDigits, i, j;
+    oldDigits := Digits; Digits := max(oldDigits,30);
+    magnitudeGuard := 0; separationGuard := 0;
+    try
+        parameterMagnitude := abs(evalf(a))+abs(evalf(c))+
+            add(abs(evalf(b[i])),i=1..nops(b));
+        if IsFiniteNumber(parameterMagnitude) and parameterMagnitude > 1 then
+            magnitudeGuard := max(magnitudeGuard,
+                ceil(evalf(ln(parameterMagnitude)/ln(10))));
+        end if;
+        scale := max(1,seq(abs(evalf(x[i])),i=1..nops(x)));
+        for i to nops(x) do
+            candidate := 1-x[i];
+            if not evalb(candidate=0) then
+                ratio := evalf(scale/abs(candidate));
+                if IsFiniteNumber(ratio) and ratio > 1 then
+                    separationGuard := max(separationGuard,
+                        ceil(evalf(ln(ratio)/ln(10))));
+                end if;
+            end if;
+            for j from i+1 to nops(x) do
+                candidate := x[i]-x[j];
+                if not evalb(candidate=0) then
+                    ratio := evalf(scale/abs(candidate));
+                    if IsFiniteNumber(ratio) and ratio > 1 then
+                        separationGuard := max(separationGuard,
+                            ceil(evalf(ln(ratio)/ln(10))));
+                    end if;
+                end if;
+            end do;
+        end do;
+        for parameterValue in [a,c] do
+            if Im(parameterValue)=0 then
+                nearestInteger := round(Re(parameterValue));
+                candidate := parameterValue-nearestInteger;
+                if nearestInteger<=0 and not evalb(candidate=0) then
+                    ratio := evalf(max(1,abs(parameterValue))/abs(candidate));
+                    if IsFiniteNumber(ratio) and ratio>1 then
+                        separationGuard := max(separationGuard,
+                            ceil(evalf(ln(ratio)/ln(10))));
+                    end if;
+                end if;
+            end if;
+        end do;
+    catch:
+        # Nonnumeric data are rejected by the evaluator itself.  A failed
+        # conditioning estimate must not manufacture a precision claim.
+        magnitudeGuard := max(magnitudeGuard,0);
+        separationGuard := max(separationGuard,0);
+    finally
+        Digits := oldDigits;
+    end try;
+    guardDigits := magnitudeGuard+separationGuard;
+    if guardDigits > 4096 then
+        error "the Lauricella FD conditioning guard exceeds 4096 digits";
+    end if;
+    return max(0,guardDigits);
+end proc;
+
+LauricellaFDSeriesTerminates := proc(a)
+    local value;
+    if type(a,integer) then return evalb(a<=0); end if;
+    try
+        value := a;
+        if not IsFiniteNumber(value) then return false; end if;
+        return evalb(Im(value)=0 and Re(value)<=0 and
+            Re(value)=round(Re(value)));
+    catch:
+        return false;
+    end try;
+end proc;
+
+LauricellaFDTerminationDegree := proc(a)
+    local value;
+    if type(a,integer) and a<=0 then return -a; end if;
+    try
+        value := a;
+        if IsFiniteNumber(value) and Im(value)=0 and Re(value)<=0 and
+           Re(value)=round(Re(value)) then
+            return round(-Re(value));
+        end if;
+    catch:
+        return infinity;
+    end try;
+    return infinity;
+end proc;
+
+LauricellaFDLowerParameterRegular := proc(c)
+    local value;
+    if type(c,integer) then return evalb(c>0); end if;
+    try
+        value := c;
+        if not IsFiniteNumber(value) then return false; end if;
+        if Im(value)=0 and Re(value)<=0 and
+           Re(value)=round(Re(value)) then return false; end if;
+    catch:
+        return false;
+    end try;
+    return true;
+end proc;
+
+LauricellaFDClosedFormApplicable := proc(x::list)
+    local value, numericValue;
+    for value in x do
+        try
+            numericValue := evalf(value);
+            if not IsFiniteNumber(numericValue) then return false; end if;
+            if Im(numericValue)=0 and Re(numericValue)>=1 then return false; end if;
+        catch:
+            return false;
+        end try;
+    end do;
+    return true;
+end proc;
+
+LauricellaFDClosedFormValue := proc(b::list,x::list)
+    local i;
+    return evalf(exp(-add(b[i]*ln(1-x[i]),i=1..nops(x))));
+end proc;
+
+# Let S(t)=product_i (1-x_i*t)^(-b_i)=sum_k s_k*t^k.  Its logarithmic
+# derivative gives k*s_k=sum_{j=1}^k p_j*s_(k-j), where
+# p_j=sum_i b_i*x_i^j.  This replaces binomial(D+n,n) multi-indices by an
+# O(D^2+nD) recurrence.  The same coefficients yield every first derivative
+# because dS/dx_i=b_i*t*S/(1-x_i*t).
+LauricellaFDFastSeriesVector := proc(
+    a, b::list, c, x::list, digits::posint, maximumDegree::nonnegint
+)
+    local n, coefficients, powerSums, quotientCoefficients, values,
+          majorantCoefficients, majorantPowerSums,
+          majorantQuotientCoefficients, pochhammerRatio,
+          majorantPochhammerRatio, degree, inner, majorantInner,
+          coefficientValue, majorantCoefficient, termValue,
+          derivativeTerm, majorantTerm, shellNorm, majorantShell,
+          valueNorm, tolerance, qBound, bMagnitude, rhoUpper,
+          tailEstimate, i, j;
+    n := nops(x);
+    if nops(b) <> n then error "b and x must have the same length"; end if;
+    coefficients := Array(0..maximumDegree,fill=0);
+    powerSums := Array(0..maximumDegree,fill=0);
+    majorantCoefficients := Array(0..maximumDegree,fill=0);
+    majorantPowerSums := Array(0..maximumDegree,fill=0);
+    coefficients[0] := 1;
+    majorantCoefficients[0] := 1;
+    quotientCoefficients := Vector(n,datatype=anything,fill=1);
+    majorantQuotientCoefficients := Vector(n,datatype=anything,fill=1);
+    values := Vector(n+1,datatype=anything);
+    values[1] := 1;
+    pochhammerRatio := 1; majorantPochhammerRatio := 1;
+    tolerance := evalf(10^(-(digits+6)));
+    qBound := `if`(n=0,0,max(seq(abs(x[i]),i=1..n)));
+    bMagnitude := add(abs(b[i]),i=1..n);
+    tailEstimate := infinity;
+    for degree to maximumDegree do
+        if evalb(c+degree-1 = 0) then
+            error "the defining Lauricella FD series has a singular lower parameter";
+        end if;
+        powerSums[degree] := add(b[i]*x[i]^degree,i=1..n);
+        majorantPowerSums[degree] :=
+            add(abs(b[i])*abs(x[i])^degree,i=1..n);
+        inner := 0; majorantInner := 0;
+        for j to degree do
+            inner := inner + powerSums[j]*coefficients[degree-j];
+            majorantInner := majorantInner+
+                majorantPowerSums[j]*majorantCoefficients[degree-j];
+        end do;
+        coefficientValue := evalf(inner/degree);
+        majorantCoefficient := evalf(majorantInner/degree);
+        coefficients[degree] := coefficientValue;
+        majorantCoefficients[degree] := majorantCoefficient;
+        pochhammerRatio := evalf(pochhammerRatio*(a+degree-1)/(c+degree-1));
+        majorantPochhammerRatio := evalf(majorantPochhammerRatio*
+            abs(a+degree-1)/abs(c+degree-1));
+        termValue := evalf(pochhammerRatio*coefficientValue);
+        values[1] := evalf(values[1]+termValue);
+        shellNorm := abs(termValue);
+        majorantShell := evalf(majorantPochhammerRatio*
+            majorantCoefficient);
+        for i to n do
+            derivativeTerm := evalf(pochhammerRatio*b[i]*quotientCoefficients[i]);
+            values[i+1] := evalf(values[i+1]+derivativeTerm);
+            shellNorm := max(shellNorm,abs(derivativeTerm));
+            majorantTerm := evalf(majorantPochhammerRatio*abs(b[i])*
+                majorantQuotientCoefficients[i]);
+            majorantShell := max(majorantShell,majorantTerm);
+            quotientCoefficients[i] := evalf(coefficientValue+x[i]*quotientCoefficients[i]);
+            majorantQuotientCoefficients[i] := evalf(majorantCoefficient+
+                abs(x[i])*majorantQuotientCoefficients[i]);
+        end do;
+        if not IsFiniteNumber(shellNorm) or not IsFiniteNumber(majorantShell) or
+           not andmap(IsFiniteNumber,[seq(values[i],i=1..n+1)]) then
+            return [values,false,degree,infinity];
+        end if;
+        valueNorm := max(VectorMaxAbs(values),1);
+        if majorantPochhammerRatio=0 then
+            return [values,true,degree-1,0];
+        end if;
+        # For all later shell indices j >= degree, the scalar and every
+        # first-derivative majorant ratio is bounded by the expression below.
+        # Its two rational factors decrease once degree>|c|.  This supplies an
+        # absolute geometric tail bound and cannot be fooled by cancellation.
+        if degree > abs(c) and degree >= 8 then
+            rhoUpper := evalf(qBound*(degree+abs(a))/(degree-abs(c))*
+                (degree+bMagnitude)/degree);
+        else
+            rhoUpper := infinity;
+        end if;
+        if rhoUpper < 1 then
+            tailEstimate := evalf(majorantShell*rhoUpper/(1-rhoUpper));
+            if tailEstimate <= tolerance*valueNorm then
+                return [values,true,degree,tailEstimate];
+            end if;
+        end if;
+    end do;
+    return [values,false,maximumDegree,tailEstimate];
+end proc;
+
+# Repeat the grouped recurrence at successively higher working precision.  The
+# absolute majorant controls truncation; this independent comparison controls
+# rounding loss from large cancelling parameters.
+LauricellaFDFastSeriesChecked := proc(
+    a,b::list,c,x::list,digits::posint,maximumDegree::posint,
+    extraGuard::nonnegint
+)
+    local oldDigits, guardDigits, attempt, workingDigits, current, lower,
+          previous, discrepancy, degreeDiscrepancy, tolerance,
+          lowerDegree, qBound, valuesFinite, majorantPassed, i,
+          terminationDegree, effectiveMaximumDegree,
+          degreeScaledDiscrepancy, precisionScaledDiscrepancy;
+    oldDigits := Digits;
+    guardDigits := max(extraGuard,LauricellaFDWorkingGuardDigits(b,x,a,c));
+    terminationDegree := LauricellaFDTerminationDegree(a);
+    effectiveMaximumDegree := `if`(terminationDegree=infinity,
+        maximumDegree,min(maximumDegree,terminationDegree));
+    if LauricellaFDSeriesOperationCount(nops(x),effectiveMaximumDegree)>20000000 then
+        error "the specialized Lauricella FD series exceeds its hard operation limit";
+    end if;
+    previous := NULL; discrepancy := infinity;
+    tolerance := evalf(10^(-(digits+3)));
+    try
+        for attempt from 0 to 2 do
+            workingDigits := digits+14+guardDigits+10*attempt;
+            Digits := workingDigits;
+            current := LauricellaFDFastSeriesVector(a,b,c,map(evalf,x),
+                digits,effectiveMaximumDegree);
+            if terminationDegree<>infinity and
+               maximumDegree>=terminationDegree then
+                current := [current[1],true,terminationDegree,0];
+            end if;
+            valuesFinite := andmap(IsFiniteNumber,
+                [seq(current[1][i],i=1..nops(x)+1)]);
+            if not valuesFinite then
+                return [current[1],false,current[3],infinity,
+                    infinity,workingDigits,"failed"];
+            end if;
+            majorantPassed := current[2];
+            degreeDiscrepancy := current[4];
+            degreeScaledDiscrepancy := infinity;
+            if not majorantPassed and effectiveMaximumDegree >= 4 then
+                # Signed parameters can make the absolute-parameter majorant
+                # unusable even though the grouped series converges rapidly.
+                # Compare fixed sums at D/2 and D only after the possible
+                # amplification near a negative lower parameter has passed.
+                lowerDegree := floor(effectiveMaximumDegree/2);
+                qBound := max(seq(abs(evalf(x[i])),i=1..nops(x)));
+                if qBound < 1 and effectiveMaximumDegree > abs(evalf(c))+digits+16 then
+                    lower := LauricellaFDFastSeriesVector(a,b,c,map(evalf,x),
+                        digits,lowerDegree);
+                    if andmap(IsFiniteNumber,
+                       [seq(lower[1][i],i=1..nops(x)+1)]) then
+                        degreeDiscrepancy := evalf(
+                            abs(current[1][1]-lower[1][1])/(1-qBound));
+                        degreeScaledDiscrepancy := evalf(max(seq(
+                            abs(current[1][i]-lower[1][i])/
+                            max(abs(current[1][i]),1),i=1..nops(x)+1)) /
+                            (1-qBound));
+                    end if;
+                end if;
+            end if;
+            if previous <> NULL then
+                discrepancy := abs(current[1][1]-previous[1][1]);
+                precisionScaledDiscrepancy := evalf(max(seq(
+                    abs(current[1][i]-previous[1][i])/
+                    max(abs(current[1][i]),1),i=1..nops(x)+1)));
+                if precisionScaledDiscrepancy <= tolerance and
+                   (majorantPassed or degreeScaledDiscrepancy <= tolerance) then
+                    return [current[1],true,current[3],
+                        max(`if`(majorantPassed,current[4],degreeDiscrepancy),
+                            discrepancy),discrepancy,
+                        workingDigits,
+                        `if`(majorantPassed,"majorant","doubled_degree")];
+                end if;
+            end if;
+            previous := current;
+        end do;
+    finally
+        Digits := oldDigits;
+    end try;
+    return [current[1],false,current[3],current[4],
+        discrepancy,workingDigits,"failed"];
+end proc;
+
+LauricellaFDEulerApplicable := proc(a,b::list,c,x::list)
+    local av, cv, value;
+    try
+        av := evalf(a); cv := evalf(c);
+        if not IsFiniteNumber(av) or not IsFiniteNumber(cv) then return false; end if;
+        if Im(av) <> 0 or Im(cv) <> 0 or Re(av) <= 0 or Re(cv-av) <= 0 then
+            return false;
+        end if;
+        for value in [op(b),op(x)] do
+            if not IsFiniteNumber(evalf(value)) then return false; end if;
+        end do;
+        for value in x do
+            if Im(evalf(value)) <> 0 or Re(evalf(value)) >= 1 then return false; end if;
+        end do;
+    catch:
+        return false;
+    end try;
+    return true;
+end proc;
+
+LauricellaFDEulerCostSafe := proc(b::list,digits::posint)
+    local magnitude, value;
+    try
+        magnitude := 0;
+        for value in b do magnitude := magnitude+abs(evalf(value)); end do;
+        return evalb(IsFiniteNumber(magnitude) and
+            magnitude <= max(32,2*digits));
+    catch:
+        return false;
+    end try;
+end proc;
+
+# Principal-germ boundary vector [F,dF/dx_1,...,dF/dx_n] for the explicit
+# Lauricella FD connection.  This is the practical seed for full Pfaffian
+# transport and uses the grouped total-degree recurrence above.
+LauricellaFDInitialVector := proc(
+    a,b::list,c,x::list,
+    {digits := 50, maximumDegree := 260, returnDiagnostics := false}
+)
+    local result, guardDigits, presentedValues, outputRounding, value;
+    if nops(b) <> nops(x) then error "b and x must have the same length"; end if;
+    if digits < 1 then error "digits must be positive"; end if;
+    guardDigits := LauricellaFDWorkingGuardDigits(b,x,a,c);
+    result := LauricellaFDFastSeriesChecked(a,b,c,x,digits,
+        maximumDegree,guardDigits);
+    if not result[2] then
+        error "the grouped Lauricella FD boundary series did not converge or lost precision through degree %1",maximumDegree;
+    end if;
+    presentedValues := map(entry->evalf[digits](entry),result[1]);
+    outputRounding := max(seq(
+        LauricellaFDRoundingAllowance(value,digits),
+        value in convert(presentedValues,list)));
+    if returnDiagnostics then
+        return Record('hpType'="LauricellaFDInitialVector",
+            'value'=presentedValues,'methodUsed'="series",
+            'degree'=result[3],
+            'tailBound'=`if`(result[7]="majorant",result[4],-1),
+            'doubledDegreeDifference'=
+                `if`(result[7]="doubled_degree",result[4],-1),
+            'convergenceTest'=result[7],
+            'roundingError'=max(result[5],outputRounding),
+            'workingDigits'=result[6]);
+    end if;
+    return presentedValues;
+end proc;
+
+LauricellaFDEulerValue := proc(a,b::list,c,x::list,digits::posint)
+    local parameter, exponentValue, integrand, prefactor, usedIndices,
+          paired, allExponentsPaired, differenceRatio, ratioBound, exponentTail,
+          exponentTolerance, truncationDegree, maximumLogDegree,
+          pairCoefficient, alternativeRatio,
+          i, j, k, oldDigits, result;
+    if not LauricellaFDEulerApplicable(a,b,c,x) then
+        error "the real Euler integral requires Re(c)>Re(a)>0 and real x_i<1";
+    end if;
+    parameter := parse("hp_fd_euler_t");
+    oldDigits := Digits; Digits := max(oldDigits,digits+10);
+    try
+        # Opposite exponents at nearby coordinates are combined before
+        # quadrature.  Expanding log(1-u) avoids forming two large powers or
+        # subtracting nearly equal logarithms at every quadrature node.
+        exponentValue := 0; usedIndices := {}; maximumLogDegree := 32;
+        allExponentsPaired := true;
+        exponentTolerance := evalf(10^(-(digits+8)));
+        for i to nops(x) do
+            if member(i,usedIndices) then next; end if;
+            paired := false;
+            for j from i+1 to nops(x) do
+                if member(j,usedIndices) or not evalb(b[i]+b[j]=0) then
+                    next;
+                end if;
+                if Im(evalf(x[i]))<>0 or Im(evalf(x[j]))<>0 then
+                    next;
+                end if;
+                differenceRatio := normal(
+                    (x[j]-x[i])*parameter/(1-x[i]*parameter));
+                ratioBound := evalf(abs(x[j]-x[i])/abs(1-x[i]));
+                pairCoefficient := b[i];
+                alternativeRatio := evalf(abs(x[i]-x[j])/abs(1-x[j]));
+                if alternativeRatio < ratioBound then
+                    differenceRatio := normal(
+                        (x[i]-x[j])*parameter/(1-x[j]*parameter));
+                    ratioBound := alternativeRatio;
+                    pairCoefficient := b[j];
+                end if;
+                if ratioBound >= 1 then next; end if;
+                truncationDegree := 1;
+                exponentTail := evalf(abs(pairCoefficient)*ratioBound^2/
+                    (2*(1-ratioBound)));
+                while exponentTail > exponentTolerance and
+                      truncationDegree < maximumLogDegree do
+                    truncationDegree := truncationDegree+1;
+                    exponentTail := evalf(abs(pairCoefficient)*
+                        ratioBound^(truncationDegree+1)/
+                        ((truncationDegree+1)*(1-ratioBound)));
+                end do;
+                if exponentTail <= exponentTolerance then
+                    exponentValue := exponentValue-pairCoefficient*
+                        add(differenceRatio^k/k,k=1..truncationDegree);
+                    usedIndices := usedIndices union {i,j};
+                    paired := true;
+                    break;
+                end if;
+            end do;
+            if not paired then
+                exponentValue := exponentValue-b[i]*ln(1-x[i]*parameter);
+                usedIndices := usedIndices union {i};
+                allExponentsPaired := false;
+            end if;
+        end do;
+        # The raw inputs were already rounded with the dynamic guard, and the
+        # small coordinate differences are now explicit coefficients of the
+        # stabilized exponent.  Quadrature itself therefore needs only the
+        # requested precision plus its integration guard.
+        Digits := digits+10;
+        integrand := parameter^(a-1)*(1-parameter)^(c-a-1)*
+            exp(exponentValue);
+        prefactor := GAMMA(c)/(GAMMA(a)*GAMMA(c-a));
+        if allExponentsPaired then
+            result := evalf(prefactor*Int(integrand,parameter=0..1,
+                parse("method")=parse("_Dexp")));
+        else
+            result := evalf(prefactor*Int(integrand,parameter=0..1));
+        end if;
+        if not IsFiniteNumber(result) then
+            error "the Euler integral did not return a finite numerical value";
+        end if;
+    finally
+        Digits := oldDigits;
+    end try;
+    return result;
+end proc;
+
+# Explicit rank-(n+1) connection in the derivative basis
+# [F,dF/dx_1,...,dF/dx_n].  It follows from the standard Lauricella FD PDEs
+# and avoids a generic Macaulay reduction.
+LauricellaFDPfaffianSystem := proc(
+    a, b::list, c,
+    {digits := 50, variableNames := []}
+)
+    local n, variables, rank, matrices, matrixValue, diagonalCoefficient,
+          singularFactors, basisLabels, i, j, k;
+    n := nops(b);
+    if n = 0 then error "Lauricella FD needs at least one variable"; end if;
+    if nops(variableNames) = 0 then
+        variables := [seq(parse(cat("hp_fd_x",i)),i=1..n)];
+    else
+        variables := variableNames;
+    end if;
+    if nops(variables) <> n or not andmap(type,variables,symbol) or
+       nops(convert(variables,set)) <> n then
+        error "variableNames must contain one distinct symbol per b parameter";
+    end if;
+    rank := n+1; matrices := [];
+    for k to n do
+        matrixValue := Matrix(rank,rank,datatype=anything);
+        matrixValue[1,k+1] := 1;
+        for i to n do
+            if i = k then next; end if;
+            matrixValue[i+1,i+1] := normal(b[k]/(variables[i]-variables[k]));
+            matrixValue[i+1,k+1] := normal(-b[i]/(variables[i]-variables[k]));
+        end do;
+        matrixValue[k+1,1] := normal(a*b[k]/(variables[k]*(1-variables[k])));
+        diagonalCoefficient := -c+(a+b[k]+1)*variables[k];
+        for j to n do
+            if j = k then next; end if;
+            diagonalCoefficient := diagonalCoefficient-
+                (1-variables[k])*variables[j]*b[j]/(variables[k]-variables[j]);
+            matrixValue[k+1,j+1] := normal(
+                b[k]*variables[j]*(1-variables[j])/
+                (variables[k]*(1-variables[k])*(variables[k]-variables[j])));
+        end do;
+        matrixValue[k+1,k+1] := normal(
+            diagonalCoefficient/(variables[k]*(1-variables[k])));
+        matrices := [op(matrices),matrixValue];
+    end do;
+    singularFactors := [seq(variables[i],i=1..n),
+        seq(1-variables[i],i=1..n),
+        seq(seq(variables[i]-variables[j],j=i+1..n),i=1..n-1)];
+    basisLabels := ["F",seq(cat("dF_dx",i),i=1..n)];
+    return MakeUserPfaffianRecord(matrices,variables,rank,basisLabels,digits,
+        singularFactors,MakeExactFlatnessRecord(true,"verified_lauricella_fd_formula",[]),
+        "LauricellaFD",[a,b,c]);
+end proc;
+
+LauricellaFDPfaffianValue := proc(
+    a,b::list,c,x::list,digits::posint,maximumDegree::posint,
+    guardDigits::nonnegint,
+    branchSide::integer,waypoints::list,frobeniusOrder::nonnegint,
+    maximumSteps::posint,verifyReverse::boolean,verbose::boolean
+)
+    local system, targetPoint, maximumTarget, scale, basepoint, initialData, path,
+          transport, continued, oldDigits, workingDigits, seedDegree, result, i;
+    if nops(x) = 0 then return 1; end if;
+    # parse prevents Maple from evaluating an option name that is also a
+    # positional parameter of this procedure (for example digits=10 becoming
+    # the meaningless equation 10=18 in a nested call).
+    system := LauricellaFDPfaffianSystem(a,b,c,
+        parse("digits")=digits+8+guardDigits);
+    if verbose then printf("HyperPrecision: explicit Lauricella FD rank-%d connection constructed for parameters %a, %a, %a\n",nops(x)+1,a,b,c); end if;
+    workingDigits := digits+14+guardDigits;
+    oldDigits := Digits; Digits := max(oldDigits,workingDigits);
+    try
+        targetPoint := map(evalf,x);
+        maximumTarget := max(seq(abs(targetPoint[i]),i=1..nops(targetPoint)));
+        scale := min(1/8,1/(8*max(maximumTarget,1)));
+        basepoint := [seq(evalf(scale*x[i]),i=1..nops(targetPoint))];
+        seedDegree := min(maximumDegree,1000);
+        initialData := LauricellaFDFastSeriesChecked(a,b,c,basepoint,
+            digits+4,seedDegree,guardDigits);
+        if not initialData[2] then
+            error "the fast Lauricella FD boundary series did not converge or lost precision";
+        end if;
+        if verbose then printf("HyperPrecision: boundary series degree %d, tail estimate %a\n",initialData[3],initialData[4]); end if;
+        path := PlanPath(system,basepoint,targetPoint,
+            parse("mode")=`if`(nops(waypoints)=0,"canonical","user"),
+            parse("waypoints")=waypoints,
+            parse("branchSide")=branchSide,parse("digits")=digits);
+        if verbose then printf("HyperPrecision: Pfaffian path has %d segment(s)\n",nops(path:-points)-1); end if;
+        transport := TransportFundamental(system,path,parse("digits")=digits,
+            parse("taylorOrder")=frobeniusOrder,
+            parse("maximumSteps")=maximumSteps,
+            parse("verificationOrder")=4,
+            parse("verifyReverse")=verifyReverse,
+            parse("verbose")=verbose);
+        continued := ApplyTransport(transport,initialData[1]);
+        result := ChopValue(continued[1],digits);
+    finally
+        Digits := oldDigits;
+    end try;
+    return [result,transport,initialData[3],initialData[4]];
+end proc;
+
 LauricellaFD := proc(
     a, b::list, c, x::list,
     {digits := 50, epsilon := 0, epsilonOrder := "none", poleOrder := "automatic",
      branchSide := -1, waypoints := [], maximumSeed := 0, frobeniusOrder := 0,
-     maximumDegree := 260, maximumSteps := 20000, verbose := false}
+     maximumDegree := 260, maximumSteps := 20000, verbose := false,
+     method := "auto", verifyReverse := false, returnDiagnostics := false}
 )
+    local series, exactCompressed, activeB, activeX,
+          exactA, exactB, exactC, numericA, numericC, estimate,
+          seriesResult, pfaffianResult, result, oldDigits, startTime,
+          guardDigits, qBound, seriesOperationAllowed, eulerSucceeded, i,
+          terminationDegree, seriesEffectiveDegree, outputRounding,
+          totalErrorEstimate;
+    startTime := time();
     if nops(b) <> nops(x) then error "b and x must have the same length"; end if;
-    return FinishPredefined(PredefinedSeries("LauricellaFD", [a,op(b),c], nops(x)), x,
-        digits, epsilon, epsilonOrder, poleOrder, branchSide, waypoints, maximumSeed,
-        frobeniusOrder, maximumDegree, maximumSteps, verbose);
+    if not member(method,["auto","series","euler","pfaffian","generic"]) then
+        error "method must be auto, series, euler, pfaffian, or generic";
+    end if;
+    series := PredefinedSeries("LauricellaFD",[a,op(b),c],nops(x));
+    if epsilonOrder <> "none" or method = "generic" then
+        result := FinishPredefined(series,x,digits,epsilon,epsilonOrder,poleOrder,
+            branchSide,waypoints,maximumSeed,frobeniusOrder,maximumDegree,
+            maximumSteps,verbose);
+        if returnDiagnostics then
+            return MakeLauricellaFDEvaluationRecord(result,"generic",-1,-1,
+                evalf(time()-startTime),-1,nops(x),-1);
+        end if;
+        return result;
+    end if;
+    if digits < 1 then error "digits must be positive"; end if;
+    oldDigits := Digits;
+    try
+        exactA := series:-upperParameters[1]:-constant+
+            series:-upperParameters[1]:-slope*epsilon;
+        exactB := [seq(series:-upperParameters[i]:-constant+
+            series:-upperParameters[i]:-slope*epsilon,
+            i=2..nops(series:-upperParameters))];
+        exactC := series:-lowerParameters[1]:-constant+
+            series:-lowerParameters[1]:-slope*epsilon;
+        if nops(waypoints)=0 then
+            # Group the raw inputs exactly once.  Grouping rounded parameters
+            # or coordinates can erase a small difference multiplied by a
+            # large exponent and can also give b and x different dimensions.
+            exactCompressed := LauricellaFDCompressVariables(exactB,x);
+        else
+            # Endpoint compression is a principal-germ identity.  Equal
+            # endpoint coordinates can have different sheets after travelling
+            # along user paths, so a path-dependent evaluation retains every
+            # original variable.
+            exactCompressed := [exactB,x];
+        end if;
+        guardDigits := LauricellaFDWorkingGuardDigits(
+            exactCompressed[1],exactCompressed[2],exactA,exactC);
+        Digits := digits+14+guardDigits;
+        activeB := map(evalf,exactCompressed[1]);
+        activeX := map(evalf,exactCompressed[2]);
+        numericA := evalf(exactA); numericC := evalf(exactC);
+        if not LauricellaFDLowerParameterRegular(exactC) then
+            error "the defining Lauricella FD function has a singular lower parameter";
+        end if;
+        if nops(activeX) = 0 then
+            result := evalf[digits](1);
+            if returnDiagnostics then
+                return MakeLauricellaFDEvaluationRecord(result,
+                    "exact_reduction",0,0,evalf(time()-startTime),0,0,0);
+            end if;
+            return result;
+        end if;
+        if method="auto" and nops(waypoints)=0 and branchSide=-1 and
+           evalb(exactA=exactC) and
+           LauricellaFDClosedFormApplicable(exactCompressed[2]) then
+            result := ChopValue(LauricellaFDClosedFormValue(
+                exactCompressed[1],exactCompressed[2]),digits);
+            result := evalf[digits](result);
+            if returnDiagnostics then
+                outputRounding := LauricellaFDRoundingAllowance(result,digits);
+                return MakeLauricellaFDEvaluationRecord(result,
+                    "closed_form",0,outputRounding,
+                    evalf(time()-startTime),0,nops(activeX),0,
+                    "not_applicable",-1,-1,outputRounding);
+            end if;
+            return result;
+        end if;
+        estimate := LauricellaFDEstimatedDegree(activeX,digits);
+        if nops(waypoints) > 0 and member(method,["series","euler"]) then
+            error "series and Euler methods evaluate the principal origin germ and cannot honour explicit waypoints; use method=pfaffian";
+        end if;
+        qBound := max(seq(abs(activeX[i]),i=1..nops(activeX)));
+        terminationDegree := LauricellaFDTerminationDegree(exactA);
+        seriesEffectiveDegree := `if`(terminationDegree=infinity,
+            maximumDegree,min(maximumDegree,terminationDegree));
+        seriesOperationAllowed := evalb(
+            LauricellaFDSeriesOperationCount(nops(activeX),seriesEffectiveDegree)
+                <=20000000);
+        if method="series" and not seriesOperationAllowed then
+            error "the specialized Lauricella FD series exceeds its hard operation limit";
+        end if;
+        if method = "series" or
+           (method = "auto" and nops(waypoints)=0 and
+            seriesOperationAllowed and
+            (LauricellaFDSeriesTerminates(exactA) or qBound < 1)) then
+            seriesResult := LauricellaFDFastSeriesChecked(exactA,
+                exactCompressed[1],exactC,exactCompressed[2],digits,
+                maximumDegree,guardDigits);
+            if seriesResult[2] then
+                result := ChopValue(seriesResult[1][1],digits);
+                result := evalf[digits](result);
+                if returnDiagnostics then
+                    outputRounding := LauricellaFDRoundingAllowance(result,digits);
+                    totalErrorEstimate := max(seriesResult[4],outputRounding);
+                    return MakeLauricellaFDEvaluationRecord(result,
+                        "series",seriesResult[3],totalErrorEstimate,
+                        evalf(time()-startTime),estimate,nops(activeX),0,
+                        seriesResult[7],
+                        `if`(seriesResult[7]="majorant",seriesResult[4],-1),
+                        `if`(seriesResult[7]="doubled_degree",seriesResult[4],-1),
+                        max(seriesResult[5],outputRounding));
+                end if;
+                return result;
+            end if;
+            if method = "series" then
+                error "the fast Lauricella FD series did not converge through degree %1",maximumDegree;
+            end if;
+        end if;
+        if method = "euler" then
+            result := LauricellaFDEulerValue(numericA,activeB,numericC,activeX,digits);
+            result := ChopValue(result,digits);
+            result := evalf[digits](result);
+            if returnDiagnostics then
+                return MakeLauricellaFDEvaluationRecord(result,
+                    "euler",-1,-1,evalf(time()-startTime),estimate,
+                    nops(activeX),0);
+            end if;
+            return result;
+        elif method = "auto" and nops(waypoints)=0 and
+             LauricellaFDEulerApplicable(numericA,activeB,numericC,activeX) and
+             LauricellaFDEulerCostSafe(activeB,digits) then
+            eulerSucceeded := false;
+            try
+                result := LauricellaFDEulerValue(
+                    numericA,activeB,numericC,activeX,digits);
+                eulerSucceeded := IsFiniteNumber(result);
+            catch:
+                eulerSucceeded := false;
+                if verbose then
+                    printf("HyperPrecision: Euler evaluation failed; falling back to Pfaffian transport\n");
+                end if;
+            end try;
+            if eulerSucceeded then
+                result := ChopValue(result,digits);
+                result := evalf[digits](result);
+                if returnDiagnostics then
+                    return MakeLauricellaFDEvaluationRecord(result,
+                        "euler",-1,-1,evalf(time()-startTime),estimate,
+                        nops(activeX),0);
+                end if;
+                return result;
+            end if;
+        end if;
+        pfaffianResult := LauricellaFDPfaffianValue(exactA,
+            exactCompressed[1],exactC,exactCompressed[2],
+            digits,maximumDegree,guardDigits,branchSide,waypoints,frobeniusOrder,
+            maximumSteps,verifyReverse,verbose);
+        result := evalf[digits](pfaffianResult[1]);
+        if returnDiagnostics then
+            outputRounding := LauricellaFDRoundingAllowance(result,digits);
+            return MakeLauricellaFDEvaluationRecord(result,"pfaffian",
+                pfaffianResult[3],max(pfaffianResult[4],
+                pfaffianResult[2]:-diagnostics:-estimatedError,
+                pfaffianResult[2]:-diagnostics:-maxDifferentialResidual,
+                outputRounding),
+                evalf(time()-startTime),estimate,nops(activeX),
+                nops(pfaffianResult[2]:-factors),"not_applicable",-1,-1,
+                outputRounding);
+        end if;
+    finally
+        Digits := oldDigits;
+    end try;
+    return result;
 end proc;
 
 ParseFunctionCall := proc(functionSpec, epsilonName)

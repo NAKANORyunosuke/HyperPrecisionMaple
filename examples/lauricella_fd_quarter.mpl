@@ -23,10 +23,10 @@ printf("Lauricella FD diagonal value = %a\n",fdDiagonal):
 printf("Gauss diagonal value         = %a\n",gaussDiagonal):
 printf("diagonal identity error      = %a\n\n",diagonalError):
 
-# Build the full rank-four Pfaffian system.
-fdSeries := FunctionSeries("LauricellaFD",[a,op(b),c],3):
-fdSystem := FindPfaffianSystem(fdSeries,'digits'=workDigits):
-rankData := FindHolonomicRank(fdSeries,'digits'=workDigits):
+# Build the explicit full rank-four Pfaffian system.  This constructor avoids
+# generic Macaulay reduction and remains practical in higher dimensions.
+fdSystem := LauricellaFDPfaffianSystem(a,b,c,'digits'=workDigits):
+rankData := [fdSystem:-rank,fdSystem:-basis]:
 flatness := CheckIntegrability(fdSystem):
 divisor := SingularFactors(fdSystem):
 
@@ -38,7 +38,7 @@ printf("singular factors = %a\n\n",divisor:-factors):
 # Transport the full fundamental matrix between two regular points.
 basepoint := [1/10,1/20,1/40]:
 target := [1/5,1/10,1/20]:
-initialVector := InitialVector(fdSystem,basepoint,'digits'=workDigits):
+initialVector := LauricellaFDInitialVector(a,b,c,basepoint,'digits'=workDigits):
 path := PlanPath(fdSystem,basepoint,target,'mode'="canonical",'digits'=workDigits):
 transport := TransportFundamental(fdSystem,path,'digits'=workDigits,'taylorOrder'=24,'verificationOrder'=4,'verifyReverse'=true):
 continuedVector := ApplyTransport(transport,initialVector):

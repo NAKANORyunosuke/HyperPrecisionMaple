@@ -66,13 +66,13 @@ diagonalError;
 
 ## 3. Construct the full Pfaffian connection
 
-We construct the complete Horn series and the full Pfaffian connection.
+We construct the explicit rank-four Pfaffian connection. This constructor
+uses the closed Lauricella system and does not run a generic Macaulay
+reduction.
 
 ```maple
-fdSeries := FunctionSeries("LauricellaFD",[a,op(b),c],3):
-fdSystem := FindPfaffianSystem(fdSeries,'digits'=workDigits):
-
-rankData := FindHolonomicRank(fdSeries,'digits'=workDigits):
+fdSystem := LauricellaFDPfaffianSystem(a,b,c,'digits'=workDigits):
+rankData := [fdSystem:-rank,fdSystem:-basis]:
 flatness := CheckIntegrability(fdSystem):
 divisor := SingularFactors(fdSystem):
 
@@ -94,7 +94,7 @@ the detected singular factors.
 basepoint := [1/10,1/20,1/40]:
 target := [1/5,1/10,1/20]:
 
-initialVector := InitialVector(fdSystem,basepoint,'digits'=workDigits):
+initialVector := LauricellaFDInitialVector(a,b,c,basepoint,'digits'=workDigits):
 path := PlanPath(fdSystem,basepoint,target,'mode'="canonical",'digits'=workDigits):
 
 path:-points;

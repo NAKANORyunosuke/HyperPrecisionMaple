@@ -29,6 +29,7 @@ function Invoke-MapleTest([string]$Script, [string]$Marker) {
 
 Invoke-MapleTest "runtests.mpl" "All regular tests passed."
 Invoke-MapleTest "monodromy_engine.mpl" "All Pfaffian monodromy engine tests passed."
+Invoke-MapleTest "lauricella_fd.mpl" "All Lauricella FD tests passed."
 if ($AGM) {
     Invoke-MapleTest "agm.mpl" "AGM test passed."
 }
@@ -40,4 +41,5 @@ if ($Monodromy) {
 }
 if ($Benchmarks) {
     Invoke-MapleTest "benchmark_pfaffian.mpl" "Pfaffian benchmark completed."
+    Invoke-MapleTest "benchmark_lauricella_fd.mpl" "Lauricella FD benchmark completed."
 }

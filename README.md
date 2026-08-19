@@ -24,6 +24,13 @@ It is independent of the reference Mathematica package and of
 - Complete Horn series with positive or negative integral weight rows.
 - Full Pfaffian connections for Appell `F1`--`F4`, Horn `G` and `H`, and
   Lauricella `FA`--`FD` functions.
+- A grouped total-degree recurrence for Lauricella `FD`, with cost
+  `O(D^2+n*D)` through degree `D`, an absolute tail majorant or a guarded
+  doubled-degree check, and no multi-index enumeration.
+- An explicit rank-`n+1` Lauricella `FD` Pfaffian connection in the basis
+  `[F,dF/dx1,...,dF/dxn]`.
+- Automatic selection among the grouped series, the Euler integral, and
+  Pfaffian transport. Each method can also be selected explicitly.
 - Exact singular-support extraction from the selected Macaulay pivot
   determinant when the parameters are exact.
 - Canonical and user-supplied paths, a non-mutating `safe_opt`, and an
@@ -64,6 +71,48 @@ The predefined interfaces are `Hypergeometric2F1`, `HypergeometricPFQ`,
 `AppellF1`--`AppellF4`, `HornG1`--`HornG3`, `HornH1`--`HornH7`, and
 `LauricellaFA`--`LauricellaFD`.
 
+### Lauricella FD dispatch
+
+The following seven-variable evaluation uses the grouped series and does not
+construct a generic Macaulay system:
+
+```maple
+fd7 := LauricellaFD(1/4,[1/4$7],1,[1/2,1/3,1/4,1/5,1/6,1/7,1/8],'digits'=15);
+# 1.1420121941001597687800075...
+```
+
+Set `method` to `"series"`, `"euler"`, `"pfaffian"`, `"generic"`, or
+`"auto"`. The default value is `"auto"`; `"generic"` selects the original
+Macaulay-system route. With `returnDiagnostics=true`, the result is a
+record containing `value`, `methodUsed`, `degree`, `errorEstimate`,
+`elapsedSeconds`, `compressedDimension`, `transportFactors`,
+`convergenceTest`, `tailBound`, `doubledDegreeDifference`, and
+`roundingError`.
+
+The automatic dispatcher first groups exactly equal raw coordinates and sums
+their exponents before any floating-point conversion. It then applies a
+terminating series when `a` is a nonpositive integer, the product formula when
+`c=a` on the principal sheet, the grouped series for `max(abs(x_i))<1`, the
+Euler integral when its parameter and conditioning tests pass, and the
+explicit rank-`n+1` Pfaffian transport otherwise. Large exponents and small
+nonzero coordinate separations increase the internal working precision. In
+the Euler integrand, opposite exponents at nearby coordinates are combined by
+a uniformly bounded logarithmic expansion before quadrature.
+
+Explicit waypoints force Pfaffian transport, since the grouped series and the
+straight Euler integral evaluate the principal germ at the origin and cannot
+retain a user-specified path class. The `c=a` product reduction is also
+disabled when a path is supplied.
+
+The specialized recurrence has a hard limit of 20,000,000 scalar updates.
+An automatic call that exceeds this limit proceeds to the next applicable
+method; a forced series call raises an error before allocating its coefficient
+arrays. A terminating series allocates only through its exact polynomial
+degree, independently of a larger `maximumDegree` setting. The generic Horn
+evaluator has a separate one-million-term limit. Conditioning guards above
+4,096 extra digits are rejected explicitly instead of attempting an
+unbounded allocation.
+
 An `AffineParameter(c,s)` denotes `c+s*epsilon`. Section 4.4 of the paper is
 reproduced by
 
@@ -94,7 +143,9 @@ The worksheet `examples/lauricella_fd_quarter.mw` evaluates
 Gauss function, constructs the full rank-four Pfaffian connection, and
 transports a full fundamental matrix. The adjacent Markdown file is the
 worksheet source, and `examples/lauricella_fd_quarter.mpl` is the command-line
-version. Regenerate the worksheet from the `examples` directory by
+version. The command-line file keeps each Maple call on one line for direct
+use in the worksheet GUI. Regenerate the worksheet from the `examples`
+directory by
 
 ```powershell
 cmaple -q build_lauricella_fd_quarter_worksheet.mpl
@@ -127,6 +178,20 @@ detected complex roots in the segment parameter `t`.
 
 The milestone suite constructs full connections for Appell `F1`, `F2`, and
 `F3`, and for three-variable Lauricella `FD`.
+
+For Lauricella `FD`, use the explicit constructor when a full connection is
+needed:
+
+```maple
+fdSystem := LauricellaFDPfaffianSystem(1/4,[1/4$7],1,'digits'=20):
+fdBasepoint := [1/16,1/24,1/32,1/40,1/48,1/56,1/64]:
+fdInitial := LauricellaFDInitialVector(1/4,[1/4$7],1,fdBasepoint,'digits'=20):
+```
+
+The constructor has rank eight in this example. It uses the singular factors
+`x_i`, `1-x_i`, and `x_i-x_j` directly. Thus it does not expand the repeated
+denominators of all connection entries. `LauricellaFDInitialVector` returns
+the principal-germ vector `[F,dF/dx1,...,dF/dxn]` by the grouped recurrence.
 
 A rational connection can also be supplied directly:
 
@@ -275,10 +340,23 @@ powershell -ExecutionPolicy Bypass -File .\run-tests.ps1 -Benchmarks
 ```
 
 `-Extended` runs the paper example. `-Monodromy` runs the slower known
-monodromy examples. The benchmark reports representative evaluation time,
-canonical versus `fast_opt` segment and Taylor-patch counts, reverse error,
-and known monodromy invariants. Timings depend on Maple and the host CPU;
-correctness checks use invariant values rather than timing thresholds.
+monodromy examples. The regular runner also checks the seven-variable
+Lauricella `FD` value and derivative vector, the explicit rank-eight
+connection, exact flatness, diagonal compression, branch-cut conjugacy, and
+the automatic method. Adversarial checks include terminating parameters,
+`c=a`, exponents of size `10^40`, distinct coordinates separated by
+`10^(-40)`, cancellation that defeats a last-shell stopping rule, and Euler
+fallback.
+
+The benchmark warms every applicable method and compares them at the same
+point, precision, and transport settings. It requires the automatic method to
+take at most `1.25` times the fastest applicable forced method plus `0.05`
+seconds, and it imposes a five-second upper bound on the seven-variable
+principal-germ evaluation. The old degree-40 enumeration has 62,891,499
+multi-indices, whereas the degree-100 grouped recurrence performs 11,500
+scalar recurrence updates including its absolute majorant. Timings depend on
+Maple and the host CPU; correctness checks use reference values and connection
+identities rather than timing alone.
 
 ## Numerical modes and guarantees
 
@@ -288,6 +366,35 @@ comparison, a sparse-safe local tail estimate, the differential residual,
 independent reverse-path transport, and automatic working-precision and order
 escalation. These are strong numerical checks, but not a proof by interval
 arithmetic.
+
+For the grouped Lauricella `FD` series, the primary stopping test uses an
+absolute majorant. Let `q=max(abs(x_i))` and `B=sum(abs(b_i))`. After degree
+`k`, the code bounds every later scalar and first-derivative shell by a
+geometric ratio derived from
+
+```math
+q\frac{k+|a|}{k-|c|}\frac{k+B}{k}.
+```
+
+When this ratio is less than one and the resulting geometric tail is below the
+working tolerance, `convergenceTest="majorant"`, and the `tailBound` field
+records that bound. Signed parameters can make the absolute-parameter
+majorant unusable even when the grouped series converges. In that case, the
+evaluator compares
+the sums at degrees `D/2` and `D` after passing the possible amplification
+range of the lower parameter, and it repeats the degree-`D` sum at a higher
+working precision. An accepted comparison has
+`convergenceTest="doubled_degree"`, `tailBound=-1`, and a nonnegative
+`doubledDegreeDifference`. This comparison is a fast-mode error estimate, not
+an analytic tail bound. Failure of both checks sends `method="auto"` to the
+next applicable method. For the series, closed-form, and Pfaffian routes,
+`errorEstimate` also includes a conservative allowance for rounding the
+returned value to the requested significant digits; `roundingError` records
+that allowance together with any measured working-precision discrepancy.
+
+The Euler and Pfaffian methods retain their separate numerical checks. The
+Euler quadrature and the doubled-degree comparison are not interval
+certificates.
 
 `mode="certified"` is reserved for a future complex-ball implementation.
 Calling it raises an explicit error; the package never silently labels a
@@ -321,6 +428,9 @@ midpoint result as certified.
   bounds, braid generators, invariant-form solvers, and a GKZ frontend are not
   implemented.
 - Epsilon interpolation is serial.
+- Generic Horn-series enumeration stops before its cumulative work exceeds
+  one million multi-indices. Specialized evaluators and Pfaffian transport are
+  used instead when they are available.
 
 ## License and references
 

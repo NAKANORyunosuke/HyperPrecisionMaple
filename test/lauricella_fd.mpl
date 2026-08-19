@@ -1,0 +1,127 @@
+restart:
+read "../HyperPrecision.mpl":
+with(HyperPrecision):
+
+failures := 0:
+
+CheckClose := proc(label,actual,expectedValue,tolerance) global failures; local actualExact,expectedExact,err,toleranceExact; actualExact := convert(Re(actual),rational)+I*convert(Im(actual),rational); expectedExact := convert(Re(expectedValue),rational)+I*convert(Im(expectedValue),rational); toleranceExact := convert(tolerance,rational); err := evalf[40](abs(actualExact-expectedExact)); if evalb(err > toleranceExact) then failures := failures+1; printf("FAIL %s: error=%a actual=%a expected=%a\n",label,err,actual,expectedValue); else printf("PASS %s: error=%a\n",label,err); end if; end proc:
+CheckTrue := proc(label,condition) global failures; if condition then printf("PASS %s\n",label); else failures := failures+1; printf("FAIL %s\n",label); end if; end proc:
+
+quarter3Reference := evalf[40](1.0873608547101928769255558171798482881859209127925):
+quarter7Reference := evalf[40](1.1420121941001597687800075211173977305285559453994):
+quarter7DerivativeReference := [evalf[40](.13379115778165143470437821067742502136668293838365),evalf[40](.11186140012877355864172229274814215227800348250890),evalf[40](.10376156396491352762339631119775774472878712938156),evalf[40](.099529025399951066858418816641409864306043941504891),evalf[40](.096925174567551199058931629029213546820536045895809),evalf[40](.095160907003507909310763349216086651591702144782414),evalf[40](.093886286680443567256305337428224290014419352674894)]:
+b7 := [1/4$7]:
+x7 := [1/2,1/3,1/4,1/5,1/6,1/7,1/8]:
+
+startTime := time():
+auto7 := LauricellaFD(1/4,b7,1,x7,'digits'=15,'returnDiagnostics'=true):
+auto7Elapsed := time()-startTime:
+CheckClose("FD7 grouped-series value",auto7:-value,quarter7Reference,1.e-14):
+CheckTrue("FD7 auto method",evalb(auto7:-methodUsed="series")):
+CheckTrue("FD7 hard performance gate",evalb(auto7Elapsed < 5)):
+CheckTrue("FD7 absolute tail and output-rounding bounds",evalb(auto7:-tailBound >= 0 and auto7:-tailBound < 1.e-18 and auto7:-errorEstimate >= auto7:-tailBound and auto7:-errorEstimate < 1.e-13)):
+
+initial7 := LauricellaFDInitialVector(1/4,b7,1,x7,'digits'=15,'returnDiagnostics'=true):
+CheckClose("FD7 initial scalar",initial7:-value[1],quarter7Reference,1.e-14):
+for i to 7 do CheckClose(cat("FD7 derivative ",i),initial7:-value[i+1],quarter7DerivativeReference[i],1.e-14); end do:
+CheckTrue("FD7 initial-vector method",evalb(initial7:-methodUsed="series")):
+
+system7 := LauricellaFDPfaffianSystem(1/4,b7,1,'digits'=15):
+CheckTrue("FD7 explicit rank",evalb(system7:-rank=8)):
+system3 := LauricellaFDPfaffianSystem(1/4,[1/4$3],1,'digits'=15):
+CheckTrue("FD3 exact flatness",CheckExactFlatness(system3):-passed):
+
+pfaffian3 := LauricellaFD(1/4,[1/4$3],1,[1/2,1/3,1/4],'digits'=8,'method'="pfaffian",'frobeniusOrder'=24,'returnDiagnostics'=true):
+CheckClose("FD3 explicit Pfaffian",pfaffian3:-value,quarter3Reference,1.e-7):
+CheckTrue("FD3 forced method",evalb(pfaffian3:-methodUsed="pfaffian" and pfaffian3:-transportFactors>0)):
+
+radialRoots := RestrictedSingularRoots(system3,[1/16,1/24,1/32],[1/2,1/3,1/4],'digits'=12):
+CheckTrue("square-free restricted roots",evalb(nops(radialRoots)=4)):
+
+diagonal7 := LauricellaFD(1/4,b7,1,[.9$7],'digits'=15,'returnDiagnostics'=true):
+CheckClose("FD7 diagonal reduction",diagonal7:-value,evalf[30](4.0474467234750604716962305635510883237162779443989),1.e-13):
+CheckTrue("FD7 diagonal dispatch avoids full-rank transport",evalb(member(diagonal7:-methodUsed,["series","euler"]) and diagonal7:-compressedDimension=1)):
+diagonalBoundary7 := LauricellaFD(1/4,b7,1,[1-1/10^8$7],'digits'=10,'returnDiagnostics'=true):
+CheckClose("FD7 diagonal near-singular boundary",diagonalBoundary7:-value,evalf[25](30010547.627274346492673249188335914156712652219188),1.e-2):
+CheckTrue("FD7 near-singular compression",evalb(diagonalBoundary7:-methodUsed="euler" and diagonalBoundary7:-compressedDimension=1)):
+
+zeroSum := LauricellaFD(2/5,[2/3,-2/3],7/5,[.37,.37],'digits'=15,'returnDiagnostics'=true):
+CheckClose("zero-sum coalescence",zeroSum:-value,1,1.e-15):
+CheckTrue("zero-sum scalar compression",evalb(zeroSum:-methodUsed="exact_reduction" and zeroSum:-compressedDimension=0)):
+
+nearCoalescent := LauricellaFD(1/4,b7,1,[.5-3.e-12,.5-2.e-12,.5-1.e-12,.5,.5+1.e-12,.5+2.e-12,.5+3.e-12],'digits'=12,'returnDiagnostics'=true):
+CheckTrue("near-coalescent dispatch avoids ill-conditioned Pfaffian",evalb(nearCoalescent:-methodUsed="series")):
+
+terminating := LauricellaFD(-3,[1/4],7/6,[9/10],'digits'=15,'returnDiagnostics'=true):
+terminatingReference := evalf[30](hypergeom([-3,1/4],[7/6],9/10)):
+CheckClose("terminating upper parameter",terminating:-value,terminatingReference,1.e-14):
+CheckTrue("terminating dispatch",evalb(terminating:-methodUsed="series" and terminating:-degree=3)):
+terminatingZero := LauricellaFD(0,[7/5],3/2,[2],'digits'=15,'returnDiagnostics'=true):
+CheckClose("zero upper parameter",terminatingZero:-value,1,1.e-15):
+CheckTrue("zero upper parameter degree",evalb(terminatingZero:-methodUsed="series" and terminatingZero:-degree=0)):
+terminatingExterior := LauricellaFD(-3,[1/4],7/6,[2],'digits'=15,'maximumDegree'=100000000,'returnDiagnostics'=true):
+terminatingExteriorReference := evalf[30](hypergeom([-3,1/4],[7/6],2)):
+CheckClose("terminating series outside the unit disk",terminatingExterior:-value,terminatingExteriorReference,1.e-14):
+CheckTrue("terminating series uses its exact allocation degree",evalb(terminatingExterior:-methodUsed="series" and terminatingExterior:-degree=3)):
+terminatingExactCap := LauricellaFD(-3,[1/4],7/6,[2],'digits'=15,'method'="series",'maximumDegree'=3,'returnDiagnostics'=true):
+CheckClose("terminating series accepts its exact maximum degree",terminatingExactCap:-value,terminatingExteriorReference,1.e-14):
+CheckTrue("terminating exact cap metadata",evalb(terminatingExactCap:-degree=3)):
+
+closedForm := LauricellaFD(2/3,[5/7],2/3,[99/100],'digits'=15,'returnDiagnostics'=true):
+CheckClose("c equals a product reduction",closedForm:-value,evalf[30]((1-99/100)^(-5/7)),1.e-14):
+CheckTrue("c equals a dispatch",evalb(closedForm:-methodUsed="closed_form")):
+
+singularLowerRejected := false:
+try LauricellaFD(1,[0],0,[1/5],'digits'=15): catch: singularLowerRejected := true: end try:
+CheckTrue("singular lower parameter is rejected before zero reduction",singularLowerRejected):
+nearLower := LauricellaFD(1/3,[1/4],-2+1/10^40,[1/10],'digits'=15,'method'="series",'maximumDegree'=80,'returnDiagnostics'=true):
+nearLowerReference := evalf[70](hypergeom([1/3,1/4],[-2+1/10^40],1/10)):
+CheckTrue("exact near-pole lower parameter remains regular",evalb(evalf[30](abs(nearLower:-value-nearLowerReference)/max(abs(nearLowerReference),1))<1.e-14)):
+nearTerminating := LauricellaFD(-3+1/10^40,[1/4],7/6,[1/10],'digits'=15,'method'="series",'maximumDegree'=80,'returnDiagnostics'=true):
+CheckTrue("near-integral upper parameter does not terminate",evalb(nearTerminating:-degree>3)):
+
+largeB := 10^40:
+largeCancellation := LauricellaFD(1/3,[largeB,-largeB+1],7/6,[1/2,1/2],'digits'=15,'returnDiagnostics'=true):
+largeCancellationReference := evalf[40](1.214325323943790805909970844890465624277517422437454637):
+CheckClose("exact compression with large cancelling exponents",largeCancellation:-value,largeCancellationReference,1.e-14):
+CheckTrue("large exact compression dimension",evalb(largeCancellation:-compressedDimension=1)):
+
+largeNearCoordinates := LauricellaFD(1/3,[largeB,-largeB],7/6,[1/2,1/2+1/largeB],'digits'=15,'returnDiagnostics'=true):
+largeNearReference := evalf[40](.730379462420801339183052500462545280864244243982685558):
+CheckClose("near coordinates survive high-precision evaluation",largeNearCoordinates:-value,largeNearReference,1.e-14):
+CheckTrue("large near-coordinate dispatch",evalb(largeNearCoordinates:-methodUsed="series" and largeNearCoordinates:-compressedDimension=2 and largeNearCoordinates:-convergenceTest="doubled_degree" and largeNearCoordinates:-tailBound=-1 and largeNearCoordinates:-doubledDegreeDifference>=0 and largeNearCoordinates:-errorEstimate<=1.1e-14 and largeNearCoordinates:-roundingError<=1.1e-14)):
+largeNearClosedForm := LauricellaFD(2/3,[largeB,-largeB],2/3,[1/2,1/2+1/largeB],'digits'=15,'returnDiagnostics'=true):
+CheckClose("log-stabilized c equals a cancellation",largeNearClosedForm:-value,evalf[30](exp(-2)),1.e-14):
+CheckTrue("large c equals a dispatch",evalb(largeNearClosedForm:-methodUsed="closed_form" and largeNearClosedForm:-compressedDimension=2)):
+largeNearEuler := LauricellaFD(1/3,[largeB,-largeB],7/6,[1/2,1/2+1/largeB],'digits'=15,'method'="euler",'returnDiagnostics'=true):
+CheckClose("log-stabilized Euler cancellation",largeNearEuler:-value,largeNearReference,1.e-14):
+largeNearEulerReversed := LauricellaFD(1/3,[-largeB,largeB],7/6,[1/2+1/largeB,1/2],'digits'=15,'method'="euler",'returnDiagnostics'=true):
+CheckClose("log-stabilized Euler order invariance",largeNearEulerReversed:-value,largeNearReference,1.e-14):
+
+eulerFallback := LauricellaFD(1.e-20,[100,-100],1.25,[.7,.699],'digits'=8,'frobeniusOrder'=24,'returnDiagnostics'=true):
+CheckTrue("ill-conditioned Euler is avoided",evalb(eulerFallback:-methodUsed<>"euler" and (type(eulerFallback:-value,numeric) or type(eulerFallback:-value,complex(numeric))))):
+
+falseConvergenceRejected := false:
+try LauricellaFD(1.e-20,[1],-100.5,[.9],'digits'=12,'method'="series",'maximumDegree'=40): catch: falseConvergenceRejected := true: end try:
+CheckTrue("absolute majorant rejects a cancelling prefix",falseConvergenceRejected):
+
+oversizedSeriesRejected := false:
+try LauricellaFD(1/3,[1/4],7/6,[1/2],'digits'=10,'method'="series",'maximumDegree'=5000): catch: oversizedSeriesRejected := true: end try:
+CheckTrue("specialized operation gate rejects forced oversized series",oversizedSeriesRejected):
+oversizedAuto := LauricellaFD(1/3,[1/4],7/6,[1/2],'digits'=10,'maximumDegree'=5000,'returnDiagnostics'=true):
+CheckClose("operation-gate auto fallback",oversizedAuto:-value,evalf[25](hypergeom([1/3,1/4],[7/6],1/2)),1.e-9):
+CheckTrue("operation-gate fallback method",evalb(oversizedAuto:-methodUsed="euler")):
+
+upperCut := LauricellaFD(1/3,[1/4],7/6,[2],'digits'=8,'waypoints'=[[1+I/2]],'frobeniusOrder'=28,'returnDiagnostics'=true):
+lowerCut := LauricellaFD(1/3,[1/4],7/6,[2],'digits'=8,'waypoints'=[[1-I/2]],'frobeniusOrder'=28,'returnDiagnostics'=true):
+cutReference := evalf[30](1.0986624951132961991043487149468682260037065149063+.23747202829706179971998072222990036888429981175368*I):
+CheckClose("upper cut continuation",upperCut:-value,cutReference,1.e-8):
+CheckClose("lower cut continuation",lowerCut:-value,conjugate(cutReference),1.e-8):
+CheckTrue("waypoints force Pfaffian",evalb(upperCut:-methodUsed="pfaffian" and lowerCut:-methodUsed="pfaffian")):
+
+waypointSeriesRejected := false:
+try LauricellaFD(1/3,[1/4],7/6,[2],'digits'=8,'method'="series",'waypoints'=[[1+I/2]]): catch: waypointSeriesRejected := true: end try:
+CheckTrue("principal series rejects waypoints",waypointSeriesRejected):
+
+if failures = 0 then printf("All Lauricella FD tests passed.\n"): else printf("%d Lauricella FD test(s) failed.\n",failures): error "%1 Lauricella FD test(s) failed",failures: end if:
+quit:
