@@ -84,7 +84,7 @@ The AGM test checks
 
 ```math
 {}_2F_1\left(\tfrac12,\tfrac12;1;z\right)
-=\operatorname{AGM}(1,\sqrt{1-z})^{-1},
+=\mathrm{AGM}(1,\sqrt{1-z})^{-1},
 ```
 
 at `z=1-10^(-8)`.
