@@ -1,0 +1,19 @@
+HyperPrecisionMaple
+Copyright (C) 2026 NAKANO Ryuosuke and contributors
+
+This package implements the method described in:
+
+  Sumit Banik and Souvik Bera,
+  "HyperPrecision: A Mathematica package for High-Precision Numerical
+  Evaluation of Multivariate Hypergeometric Functions,"
+  Computer Physics Communications 328 (2026), 110328,
+  arXiv:2605.30216v2.
+
+The reference Mathematica implementation is available from
+https://github.com/HyperPrecision/HyperPrecision under GPL-3.0.
+
+This repository is a separate Maple reimplementation. It does not include the
+Mathematica source files, FiniteFlow, DESolver, or AMFlow.
+
+OpenAI Codex contributed to the initial Maple implementation, tests, and
+documentation.

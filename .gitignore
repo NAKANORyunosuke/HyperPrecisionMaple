@@ -1,0 +1,7 @@
+*.mla
+*.lib
+*.m
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
