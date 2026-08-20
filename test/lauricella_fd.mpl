@@ -34,6 +34,11 @@ CheckTrue("FD3 exact flatness",CheckExactFlatness(system3):-passed):
 pfaffian3 := LauricellaFD(1/4,[1/4$3],1,[1/2,1/3,1/4],'digits'=8,'method'="pfaffian",'frobeniusOrder'=24,'returnDiagnostics'=true):
 CheckClose("FD3 explicit Pfaffian",pfaffian3:-value,quarter3Reference,1.e-7):
 CheckTrue("FD3 forced method",evalb(pfaffian3:-methodUsed="pfaffian" and pfaffian3:-transportFactors>0)):
+routeSeries := LauricellaFD(1/4,[1/4,1/4],1,[1/5,1/6],'digits'=8,'method'="series",'returnDiagnostics'=true):
+routeEuler := LauricellaFD(1/4,[1/4,1/4],1,[1/5,1/6],'digits'=8,'method'="euler",'returnDiagnostics'=true):
+routeClosed := LauricellaFD(2/3,[1/4],2/3,[1/5],'digits'=8,'returnDiagnostics'=true):
+CheckTrue("FD route working precision is effective precision",evalb(routeSeries:-workingDigits>=22 and routeEuler:-workingDigits>=22 and pfaffian3:-workingDigits>=26 and routeClosed:-workingDigits>=22)):
+CheckTrue("forced Euler diagnostics are honest",evalb(routeEuler:-certificate="quadrature_unverified" and routeEuler:-errorStatus="unknown" and routeEuler:-errorEstimate=infinity and routeEuler:-roundingError>=0)):
 
 radialRoots := RestrictedSingularRoots(system3,[1/16,1/24,1/32],[1/2,1/3,1/4],'digits'=12):
 CheckTrue("square-free restricted roots",evalb(nops(radialRoots)=4)):
@@ -48,6 +53,12 @@ CheckTrue("FD7 near-singular compression",evalb(diagonalBoundary7:-methodUsed="e
 zeroSum := LauricellaFD(2/5,[2/3,-2/3],7/5,[.37,.37],'digits'=15,'returnDiagnostics'=true):
 CheckClose("zero-sum coalescence",zeroSum:-value,1,1.e-15):
 CheckTrue("zero-sum scalar compression",evalb(zeroSum:-methodUsed="exact_reduction" and zeroSum:-compressedDimension=0)):
+CheckTrue("zero-sum midpoint is not certified",evalb(zeroSum:-certificate="exact_cancellation" and zeroSum:-errorStatus="heuristic" and zeroSum:-errorEstimate>0 and zeroSum:-roundingError>0)):
+
+branchSideFull := LauricellaFD(1/4,[1/4,1/4],1,[1/5,1/5],'digits'=8,'branchSide'=0,'returnDiagnostics'=true):
+branchSideReference := evalf[25](hypergeom([1/4,1/2],[1],1/5)):
+CheckClose("branch-side full-coordinate FD value",branchSideFull:-value,branchSideReference,1.e-7):
+CheckTrue("branch-side FD retains all coordinates",evalb(branchSideFull:-methodUsed="pfaffian" and branchSideFull:-compressedDimension=2 and branchSideFull:-pathDependent and branchSideFull:-branchProvenance="explicit_transport")):
 
 nearCoalescent := LauricellaFD(1/4,b7,1,[.5-3.e-12,.5-2.e-12,.5-1.e-12,.5,.5+1.e-12,.5+2.e-12,.5+3.e-12],'digits'=12,'returnDiagnostics'=true):
 CheckTrue("near-coalescent dispatch avoids ill-conditioned Pfaffian",evalb(nearCoalescent:-methodUsed="series")):
@@ -56,9 +67,10 @@ terminating := LauricellaFD(-3,[1/4],7/6,[9/10],'digits'=15,'returnDiagnostics'=
 terminatingReference := evalf[30](hypergeom([-3,1/4],[7/6],9/10)):
 CheckClose("terminating upper parameter",terminating:-value,terminatingReference,1.e-14):
 CheckTrue("terminating dispatch",evalb(terminating:-methodUsed="series" and terminating:-degree=3)):
-terminatingZero := LauricellaFD(0,[7/5],3/2,[2],'digits'=15,'returnDiagnostics'=true):
+terminatingZero := LauricellaFD(0,[7/5],3/2,[2],'digits'=15,'method'="series",'maximumDegree'=0,'returnDiagnostics'=true,'returnDerivatives'=true):
 CheckClose("zero upper parameter",terminatingZero:-value,1,1.e-15):
-CheckTrue("zero upper parameter degree",evalb(terminatingZero:-methodUsed="series" and terminatingZero:-degree=0)):
+CheckTrue("zero upper parameter degree and derivatives",evalb(terminatingZero:-methodUsed="series" and terminatingZero:-degree=0 and terminatingZero:-derivatives=[0.])):
+CheckTrue("zero upper parameter bounded provenance",evalb(terminatingZero:-errorStatus<>"certified" and terminatingZero:-branchProvenance="principal_origin_germ")):
 terminatingExterior := LauricellaFD(-3,[1/4],7/6,[2],'digits'=15,'maximumDegree'=100000000,'returnDiagnostics'=true):
 terminatingExteriorReference := evalf[30](hypergeom([-3,1/4],[7/6],2)):
 CheckClose("terminating series outside the unit disk",terminatingExterior:-value,terminatingExteriorReference,1.e-14):
@@ -91,19 +103,29 @@ fdNearMinusTwoExact := -2+1/10^80+I/10^80:
 fdNearRealFloat := evalf(fdNearRealExact):
 fdNearDiagonalFloat := evalf(fdNearDiagonalExact):
 fdNearMinusTwoFloat := evalf(fdNearMinusTwoExact):
+fdStoredA := evalf(1/4):
+fdStoredX := evalf(1/10):
 Digits := fdSourceDigits:
+fdStoredSeries := LauricellaFD(fdStoredA,[1/4],1,[fdStoredX],'digits'=15,'method'="series",'maximumDegree'=260,'returnDiagnostics'=true):
+fdStoredInitial := LauricellaFDInitialVector(fdStoredA,[1/4],1,[fdStoredX],'digits'=15,'maximumDegree'=260,'returnDiagnostics'=true):
+fdStoredEuler := LauricellaFD(fdStoredA,[1/4],1,[fdStoredX],'digits'=8,'method'="euler",'returnDiagnostics'=true):
+CheckTrue("stored-float FD series source floor",evalb(fdStoredSeries:-workingDigits>=220)):
+CheckTrue("stored-float FD initial-vector source floor",evalb(fdStoredInitial:-workingDigits>=220)):
+CheckTrue("stored-float FD Euler source floor",evalb(fdStoredEuler:-workingDigits>=220 and fdStoredEuler:-certificate="quadrature_unverified" and fdStoredEuler:-errorEstimate=infinity)):
 fdNearRealReference := Hypergeometric2F1(1/3,2/5,fdNearRealExact,1/100,'digits'=24,'method'="series",'returnDerivatives'=true):
 fdNearDiagonalReference := Hypergeometric2F1(1/3,2/5,fdNearDiagonalExact,1/100,'digits'=24,'method'="series",'returnDerivatives'=true):
 fdNearMinusTwoReference := Hypergeometric2F1(1/3,2/5,fdNearMinusTwoExact,1/10,'digits'=24,'method'="series",'returnDerivatives'=true):
 fdNearRealFloatResult := LauricellaFD(1/3,[2/5],fdNearRealFloat,[1/100],'digits'=20,'method'="series",'maximumDegree'=260,'returnDiagnostics'=true,'returnDerivatives'=true):
 fdNearDiagonalExactResult := LauricellaFD(1/3,[2/5],fdNearDiagonalExact,[1/100],'digits'=20,'method'="series",'maximumDegree'=260,'returnDiagnostics'=true,'returnDerivatives'=true):
 fdNearDiagonalFloatResult := LauricellaFD(1/3,[2/5],fdNearDiagonalFloat,[1/100],'digits'=20,'method'="series",'maximumDegree'=260,'returnDiagnostics'=true,'returnDerivatives'=true):
+fdNearDiagonalAutoResult := LauricellaFD(1/3,[2/5],fdNearDiagonalFloat,[1/100],'digits'=20,'method'="auto",'maximumDegree'=260,'returnDiagnostics'=true,'returnDerivatives'=true):
 fdNearMinusTwoFloatResult := LauricellaFD(1/3,[2/5],fdNearMinusTwoFloat,[1/10],'digits'=20,'method'="series",'maximumDegree'=160,'returnDiagnostics'=true,'returnDerivatives'=true):
 CheckTrue("stored-float real near-pole FD value",evalb(evalf[30](abs(fdNearRealFloatResult:-value-fdNearRealReference[1])/max(1,abs(fdNearRealReference[1])))<1.e-18)):
 CheckTrue("stored-float real near-pole FD derivative",evalb(evalf[30](abs(fdNearRealFloatResult:-derivatives[1]-fdNearRealReference[2])/max(1,abs(fdNearRealReference[2])))<1.e-18)):
 CheckTrue("exact diagonal near-pole FD value",evalb(evalf[30](abs(fdNearDiagonalExactResult:-value-fdNearDiagonalReference[1])/max(1,abs(fdNearDiagonalReference[1])))<1.e-18)):
 CheckTrue("stored-float diagonal near-pole FD value",evalb(evalf[30](abs(fdNearDiagonalFloatResult:-value-fdNearDiagonalReference[1])/max(1,abs(fdNearDiagonalReference[1])))<1.e-18)):
 CheckTrue("stored-float diagonal near-pole FD derivative",evalb(evalf[30](abs(fdNearDiagonalFloatResult:-derivatives[1]-fdNearDiagonalReference[2])/max(1,abs(fdNearDiagonalReference[2])))<1.e-18)):
+CheckTrue("near-pole forced and automatic contract",evalb(fdNearDiagonalAutoResult:-methodUsed="series" and fdNearDiagonalAutoResult:-degree=fdNearDiagonalFloatResult:-degree and fdNearDiagonalAutoResult:-errorStatus=fdNearDiagonalFloatResult:-errorStatus and fdNearDiagonalAutoResult:-branchProvenance=fdNearDiagonalFloatResult:-branchProvenance and evalf[30](abs(fdNearDiagonalAutoResult:-value-fdNearDiagonalFloatResult:-value))<1.e-22 and evalf[30](abs(fdNearDiagonalAutoResult:-derivatives[1]-fdNearDiagonalFloatResult:-derivatives[1]))<1.e-22)):
 CheckTrue("stored-float diagonal c=-2 FD value",evalb(evalf[30](abs(fdNearMinusTwoFloatResult:-value-fdNearMinusTwoReference[1])/max(1,abs(fdNearMinusTwoReference[1])))<1.e-18)):
 CheckTrue("near-pole FD evaluates past the lower-pole index",evalb(fdNearRealFloatResult:-degree>100 and fdNearDiagonalExactResult:-degree>100 and fdNearDiagonalFloatResult:-degree>100)):
 CheckTrue("near-pole FD reports final-rounding scale",evalb(fdNearDiagonalFloatResult:-errorEstimate>=1.e-20*max(1,abs(fdNearDiagonalFloatResult:-value)) and fdNearDiagonalFloatResult:-errorEstimate<1.e-17*max(1,abs(fdNearDiagonalFloatResult:-value)))):
@@ -152,11 +174,11 @@ try LauricellaFD(1.e-20,[1],-100.5,[.9],'digits'=12,'method'="series",'maximumDe
 CheckTrue("absolute majorant rejects a cancelling prefix",falseConvergenceRejected):
 
 oversizedSeriesRejected := false:
-try LauricellaFD(1/3,[1/4],7/6,[1/2],'digits'=10,'method'="series",'maximumDegree'=5000): catch: oversizedSeriesRejected := true: end try:
+try LauricellaFD(1/3,[1/4],7/6,[99/100],'digits'=100,'method'="series",'maximumDegree'=30000): catch: oversizedSeriesRejected := true: end try:
 CheckTrue("specialized operation gate rejects forced oversized series",oversizedSeriesRejected):
-oversizedAuto := LauricellaFD(1/3,[1/4],7/6,[1/2],'digits'=10,'maximumDegree'=5000,'returnDiagnostics'=true):
-CheckClose("operation-gate auto fallback",oversizedAuto:-value,evalf[25](hypergeom([1/3,1/4],[7/6],1/2)),1.e-9):
-CheckTrue("operation-gate fallback method",evalb(oversizedAuto:-methodUsed="euler")):
+oversizedAuto := LauricellaFD(1/3,[1/4],7/6,[1/2],'digits'=10,'maximumDegree'=10000,'returnDiagnostics'=true):
+CheckClose("huge-cap automatic admission",oversizedAuto:-value,evalf[25](hypergeom([1/3,1/4],[7/6],1/2)),1.e-9):
+CheckTrue("huge-cap automatic predicted series",evalb(oversizedAuto:-methodUsed="series" and oversizedAuto:-degree<10000)):
 
 upperCut := LauricellaFD(1/3,[1/4],7/6,[2],'digits'=8,'waypoints'=[[1+I/2]],'frobeniusOrder'=28,'returnDiagnostics'=true):
 lowerCut := LauricellaFD(1/3,[1/4],7/6,[2],'digits'=8,'waypoints'=[[1-I/2]],'frobeniusOrder'=28,'returnDiagnostics'=true):

@@ -68,7 +68,10 @@ a := 1/4: b1 := 1/3: b2 := 1/5: c1 := 7/6: c2 := 8/7: x := 1/20: y := 1/30:
 f2Oracle := evalf[50](add(add(RisingExact(a,m+n)*RisingExact(b1,m)*RisingExact(b2,n)*x^m*y^n/(RisingExact(c1,m)*RisingExact(c2,n)*m!*n!),n=0..40-m),m=0..40)):
 f2Report := AppellF2(a,b1,b2,c1,c2,x,y,'digits'=30,'returnDiagnostics'=true):
 CheckClose("Appell F2 independent double sum",f2Report:-value,f2Oracle,1.e-28):
-CheckTrue("Appell F2 convolution dispatch",evalb(f2Report:-methodUsed="convolution")):
+CheckTrue("Appell F2 native dispatch",evalb(f2Report:-methodUsed="native")):
+f2SeriesReport := AppellF2(a,b1,b2,c1,c2,x,y,'digits'=30,'method'="series",'returnDiagnostics'=true):
+CheckClose("Appell F2 forced convolution parity",f2SeriesReport:-value,f2Oracle,1.e-28):
+CheckTrue("Appell F2 forced convolution remains available",evalb(f2SeriesReport:-methodUsed="convolution")):
 
 # First derivatives are checked through shifted-parameter identities.
 f2Vector := AppellF2(a,b1,b2,c1,c2,x,y,'digits'=30,'returnDerivatives'=true):
@@ -89,11 +92,14 @@ f4Dy := (2/7)*(3/8)/(8/7)*AppellF4(2/7+1,3/8+1,7/6,8/7+1,1/100,1/120,'digits'=30
 CheckClose("Appell F4 derivative x",f4Vector[2],f4Dx,1.e-26):
 CheckClose("Appell F4 derivative y",f4Vector[3],f4Dy,1.e-26):
 
-# Appell F1 is routed through the specialized rank-three Lauricella FD path.
+# Automatic Appell F1 uses Maple's native kernel in the principal interior.
+# The specialized rank-three Lauricella FD route remains available explicitly.
 f1Report := AppellF1(1/2,2/3,3/4,5/2,1/10,1/5,'digits'=25,'returnDiagnostics'=true):
 fdReport := LauricellaFD(1/2,[2/3,3/4],5/2,[1/10,1/5],'digits'=25,'returnDiagnostics'=true):
+f1SeriesReport := AppellF1(1/2,2/3,3/4,5/2,1/10,1/5,'digits'=25,'method'="series",'returnDiagnostics'=true):
 CheckClose("Appell F1 equals Lauricella FD2",f1Report:-value,fdReport:-value,1.e-24):
-CheckTrue("Appell F1 uses FD dispatch",evalb(f1Report:-hpType="LauricellaFDEvaluation")):
+CheckTrue("Appell F1 native dispatch",evalb(f1Report:-methodUsed="native")):
+CheckTrue("Appell F1 forced FD dispatch",evalb(f1SeriesReport:-hpType="LauricellaFDEvaluation" and f1SeriesReport:-methodUsed="series")):
 
 # Exact cancellation is performed before lower-parameter pole checks.
 zeroFZero := HypergeometricPFQ([],[],2,'digits'=25,'returnDerivatives'=true):
@@ -128,7 +134,7 @@ cancelledZeroBinomial := HypergeometricPFQ([1/3,0],[0],1/2,'digits'=30,'returnDe
 CheckClose("cancelled 0/0 binomial derivative",cancelledZeroBinomial[2],evalf[40]((1/3)*(1-1/2)^(-4/3)),1.e-28):
 
 # Generic rank-one connections reconstruct derivatives from dF=A(x)F.
-genericZeroFZero := HypergeometricPFQ([],[],1/5,'digits'=20,'method'="generic",'returnDiagnostics'=true):
+genericZeroFZero := HypergeometricPFQ([],[],1/5,'digits'=20,'method'="generic",'returnDiagnostics'=true,'returnDerivatives'=true):
 CheckClose("generic rank-one 0F0 derivative",genericZeroFZero:-derivatives[1],evalf[30](exp(1/5)),1.e-19):
 CheckTrue("generic Pfaffian error is explicitly unknown",evalb(genericZeroFZero:-certificate="transport_error_unknown" and genericZeroFZero:-errorEstimate=infinity)):
 genericOneFZero := HypergeometricPFQ([1/3],[],1/5,'digits'=20,'method'="generic",'returnDerivatives'=true):
@@ -256,7 +262,28 @@ sourceExactRealPole := -100+1/10^100:
 sourceFloatRealPole := evalf(sourceExactRealPole):
 sourceExactDiagonalPole := -100+1/10^100+I/10^100:
 sourceFloatDiagonalPole := evalf(sourceExactDiagonalPole):
+sourceStoredA := evalf(1/7):
+sourceStoredX := evalf(1/20):
+sourceStoredY := evalf(1/30):
+sourceInactiveB := evalf(1/5):
 Digits := savedSourceDigits:
+sourcePFQReport := HypergeometricPFQ([sourceStoredA,2/7,3/7],[5/6,7/8],sourceStoredX,'digits'=15,'returnDiagnostics'=true):
+sourceAppellReport := AppellF2(sourceStoredA,1/3,1/5,7/6,8/7,sourceStoredX,sourceStoredY,'digits'=15,'returnDiagnostics'=true):
+sourceFAReport := LauricellaFA(sourceStoredA,[1/5,1/6],[7/6,8/7],[sourceStoredX,sourceStoredY],'digits'=15,'method'="series",'maximumDegree'=260,'returnDiagnostics'=true):
+sourceFBReport := LauricellaFB([sourceStoredA,1/5],[1/4,1/6],7/6,[sourceStoredX,sourceStoredY],'digits'=15,'method'="series",'maximumDegree'=260,'returnDiagnostics'=true):
+sourceFCReport := LauricellaFC(sourceStoredA,1/3,[7/6,8/7],[sourceStoredX,sourceStoredY],'digits'=15,'method'="series",'maximumDegree'=260,'returnDiagnostics'=true):
+sourceHornReport := HornH3(sourceStoredA,1/3,7/6,sourceStoredX,sourceStoredY,'digits'=15,'method'="series",'maximumDegree'=260,'returnDiagnostics'=true):
+sourceGenericReport := Hypergeometric2F1(sourceStoredA,1/3,7/6,sourceStoredX,'digits'=15,'method'="generic",'returnDiagnostics'=true):
+sourceInactiveReport := AppellF2(1/4,1/3,sourceInactiveB,7/6,8/7,1/20,0,'digits'=15,'returnDiagnostics'=true):
+CheckTrue("stored-float common/native/checked source floor",evalb(sourcePFQReport:-workingDigits>=220 and sourceAppellReport:-workingDigits>=220 and sourceFAReport:-workingDigits>=220 and sourceFBReport:-workingDigits>=220 and sourceFCReport:-workingDigits>=220 and sourceHornReport:-workingDigits>=220)):
+CheckTrue("stored-float generic source floor",evalb(sourceGenericReport:-workingDigits>=220 and sourceGenericReport:-methodUsed="pfaffian")):
+CheckTrue("inactive-coordinate parameter preserves source floor",evalb(sourceInactiveReport:-workingDigits>=220 and sourceInactiveReport:-compressedDimension=1)):
+sourceExpansion := HypergeometricPFQ([EpsilonParameter(sourceStoredA,1)],[],sourceStoredX,'epsilonOrder'=1,'digits'=12):
+sourceExpansionValue := evalf[30]((1-sourceStoredX)^(-sourceStoredA)):
+sourceExpansionDerivative := evalf[30](-ln(1-sourceStoredX)*sourceExpansionValue):
+CheckClose("stored-float epsilon expansion value",sourceExpansion:-coefficients[1],sourceExpansionValue,1.e-10):
+CheckClose("stored-float epsilon expansion derivative",sourceExpansion:-coefficients[2],sourceExpansionDerivative,1.e-9):
+CheckTrue("stored-float epsilon interpolation source floor",evalb(sourceExpansion:-workingDigits>=220)):
 sourceRealReference := Hypergeometric2F1(1/3,2/5,sourceExactRealPole,1/100,'digits'=22,'method'="series",'maximumDegree'=260):
 sourceRealReport := Hypergeometric2F1(1/3,2/5,sourceFloatRealPole,1/100,'digits'=18,'method'="series",'maximumDegree'=260,'returnDiagnostics'=true):
 CheckRelative("stored-float real near-pole pFq",sourceRealReport:-value,sourceRealReference,1.e-16):
@@ -326,7 +353,7 @@ for largeTerminationDegree in [200,299,600] do
     CheckTrue(cat("large terminating pFq series route ",largeTerminationDegree),evalb(terminatingPFQ:-methodUsed="series")):
 end do:
 for largeTerminationDegree in [200,300,600] do
-    terminatingFA := LauricellaFA(-largeTerminationDegree,[1,1],[1,2],[1,0],'digits'=30,'method'="series",'maximumDegree'=largeTerminationDegree,'returnDiagnostics'=true):
+    terminatingFA := LauricellaFA(-largeTerminationDegree,[1,1],[1,2],[1,0],'digits'=30,'method'="series",'maximumDegree'=largeTerminationDegree,'returnDiagnostics'=true,'returnDerivatives'=true):
     CheckClose(cat("large terminating FA value ",largeTerminationDegree),terminatingFA:-value,0,1.e-28):
     CheckTrue(cat("large terminating FA derivatives ",largeTerminationDegree),evalb(max(seq(abs(terminatingFA:-derivatives[i]),i=1..2))<1.e-28)):
     CheckTrue(cat("large terminating FA precision rerun ",largeTerminationDegree),evalb(terminatingFA:-convergenceTest="precision_rerun_exact_termination")):
@@ -352,6 +379,10 @@ CheckTrue("huge termination gates are preallocation",evalb(time[real]()-largeGat
 ExpectError("waypoint rejects principal series",proc() Hypergeometric2F1(1,1,2,1/2,'digits'=20,'method'="series",'waypoints'=[[1/4]]) end proc,"cannot honour an explicit"):
 ExpectError("branch request rejects native call",proc() Hypergeometric2F1(1,1,2,1/2,'digits'=20,'method'="native",'branchSide'=1) end proc,"cannot honour an explicit"):
 ExpectError("nonfinite waypoint is rejected",proc() Hypergeometric2F1(1,1,2,1/2,'digits'=12,'method'="pfaffian",'waypoints'=[[infinity]]) end proc,"nonfinite"):
+fullCoordinatePath := AppellF2(1/4,1/3,1/5,7/6,8/7,1/20,0,'digits'=8,'waypoints'=[[1/100,1/100]],'returnDiagnostics'=true):
+fullCoordinateReference := Hypergeometric2F1(1/4,1/3,7/6,1/20,'digits'=18):
+CheckClose("explicit Appell path with zero endpoint coordinate",fullCoordinatePath:-value,fullCoordinateReference,1.e-7):
+CheckTrue("explicit Appell path retains full dimension",evalb(fullCoordinatePath:-methodUsed="pfaffian" and fullCoordinatePath:-compressedDimension=2 and fullCoordinatePath:-pathDependent and fullCoordinatePath:-branchProvenance="explicit_transport" and fullCoordinatePath:-genericProvenance="analytic_axis_terminal_reduction" and StringTools:-Search("analytic_axis_terminal_reduction_",fullCoordinatePath:-certificate)=1)):
 principalLogarithm := Hypergeometric2F1(1,1,2,1/2,'digits'=14):
 windingWaypoints := [[1/2],[1+I/2],[3/2],[1-I/2],[1/2]]:
 windingReport := Hypergeometric2F1(1,1,2,1/2,'digits'=12,'method'="pfaffian",'waypoints'=windingWaypoints,'returnDiagnostics'=true):
@@ -414,12 +445,16 @@ CheckRelative("Horn G1 zero-barrier recurrence",zeroBarrierReport:-value,zeroBar
 hornNames := ["HornG1","HornG2","HornG3","HornH1","HornH2","HornH3","HornH4","HornH5","HornH6","HornH7"]:
 hornParameters := [[2/7,3/8,5/9],[2/7,3/8,5/9,7/10],[2/7,3/8],[2/7,3/8,5/9,7/10],[2/7,3/8,5/9,7/10,11/12],[2/7,3/8,5/9],[2/7,3/8,5/9,7/10],[2/7,3/8,5/9],[2/7,3/8,5/9],[2/7,3/8,5/9,7/10]]:
 hornExpected := [.99150549572316836314226764212656091567861705457313,.98087503576107930264150747526998024671764481629630,.97771462079409268728694930808128597966221847904915,.99887766011490925537480283228094560275355735357656,.99433266055868541101221242743295755653222685503632,1.0169383836103631913912106741270287495123734749011,1.0164900377656771478433736471527752138895877104222,.99204401387747088460092106836572102879234747118349,.98447048211776931965798416234815556252211232390203,1.0066797826720751400383863896373855273597802541652]:
-hornMethods := ["pfaffian","neighbor_series","neighbor_series","neighbor_series","neighbor_series","neighbor_series","neighbor_series","pfaffian","neighbor_series","neighbor_series"]:
+hornScalarMethods := ["neighbor_series","pfaffian","neighbor_series","neighbor_series","neighbor_series","neighbor_series","neighbor_series","neighbor_series","neighbor_series","neighbor_series"]:
+hornDerivativeMethods := ["pfaffian","pfaffian","pfaffian","neighbor_series","pfaffian","neighbor_series","neighbor_series","pfaffian","pfaffian","pfaffian"]:
 for i to nops(hornNames) do
     hornSeries := FunctionSeries(hornNames[i],hornParameters[i],2):
     hornReport := Evaluate(hornSeries,[1/50,3/200],'digits'=28,'returnDiagnostics'=true):
     CheckClose(cat(hornNames[i]," decimal oracle"),hornReport:-value,hornExpected[i],1.e-26):
-    CheckTrue(cat(hornNames[i]," automatic dispatch"),evalb(hornReport:-methodUsed=hornMethods[i])):
+    CheckTrue(cat(hornNames[i]," scalar automatic dispatch"),evalb(hornReport:-methodUsed=hornScalarMethods[i] and nops(hornReport:-derivatives)=0 and not hornReport:-derivativeWorkload)):
+    hornDerivativeReport := Evaluate(hornSeries,[1/50,3/200],'digits'=28,'returnDiagnostics'=true,'returnDerivatives'=true):
+    CheckClose(cat(hornNames[i]," derivative-workload value"),hornDerivativeReport:-value,hornExpected[i],1.e-26):
+    CheckTrue(cat(hornNames[i]," derivative automatic dispatch"),evalb(hornDerivativeReport:-methodUsed=hornDerivativeMethods[i] and nops(hornDerivativeReport:-derivatives)=2 and hornDerivativeReport:-derivativeWorkload)):
 end do:
 forcedHornReport := HornG1(2/7,3/8,5/9,1/50,3/200,'digits'=28,'method'="series",'returnDiagnostics'=true):
 CheckClose("Horn G1 forced neighbor oracle",forcedHornReport:-value,hornExpected[1],1.e-26):

@@ -32,6 +32,7 @@ Invoke-MapleTest "runtests.mpl" "All regular tests passed."
 Invoke-MapleTest "monodromy_engine.mpl" "All Pfaffian monodromy engine tests passed."
 Invoke-MapleTest "lauricella_fd.mpl" "All Lauricella FD tests passed."
 Invoke-MapleTest "hypergeometric_fast.mpl" "All fast hypergeometric tests passed."
+Invoke-MapleTest "production_dispatch.mpl" "All production dispatch tests passed."
 if ($AGM) {
     Invoke-MapleTest "agm.mpl" "AGM test passed."
 }
@@ -45,4 +46,5 @@ if ($Benchmarks) {
     Invoke-MapleTest "benchmark_pfaffian.mpl" "Pfaffian benchmark completed."
     Invoke-MapleTest "benchmark_lauricella_fd.mpl" "Lauricella FD benchmark completed."
     Invoke-MapleTest "benchmark_hypergeometric_fast.mpl" "Fast hypergeometric benchmark completed."
+    Invoke-MapleTest "benchmark_production_dispatch.mpl" "Production dispatch benchmark completed."
 }

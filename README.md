@@ -103,16 +103,19 @@ pfqReport:-errorEstimate;
 
 For fixed parameters, `method` can be set to `"auto"`, `"series"`,
 `"native"`, `"pfaffian"`, or `"generic"`. The `"native"` method is
-defined only for generalized univariate functions. The `"generic"` method
-retains the numerical Macaulay route for comparisons. An explicit waypoint
-or a nondefault branch-side request disables principal series, convolution,
-and native evaluation. `TransportDE` normalizes explicit waypoints before it
-tests direct-series eligibility, so an explicit loop is always transported.
+defined for generalized univariate functions and Appell's four functions.
+The `"generic"` method retains the numerical Macaulay route for comparisons.
+An explicit waypoint or a nondefault branch-side request disables principal
+series, convolution, and native evaluation. `TransportDE` normalizes explicit
+waypoints before it tests direct-series eligibility, so an explicit loop is
+always transported.
 
-The recurrence is automatic for `p<=q` and for `p=q+1` inside `abs(z)<1`.
-For `p>q+1`, the defining series is used only when an upper parameter gives
-exact termination. The native method can be selected separately when Maple
-defines the requested continuation.
+For an ordinary nonterminating principal-germ `pFq` call, the automatic
+dispatcher uses Maple's native kernel before allocating a recurrence ladder.
+Exact termination and a delayed lower-parameter pole retain the checked
+recurrence. For `p>q+1`, the defining series is used only when an upper
+parameter gives exact termination. The native method can be selected
+separately when Maple defines the requested continuation.
 
 Large terminating `1F0` polynomials and terminating `2F1` values at `z=1`
 use exact binomial and Chu--Vandermonde products, respectively. These products
@@ -123,9 +126,12 @@ The O(1) `1F0` reductions at `z=1` and `z=2` remain available for a large
 polynomial degree. Other terminating recurrences must satisfy
 `maximumDegree` and their operation gate before coefficient generation.
 
-Appell `F1`, `F2`, `F3`, and `F4` are routed to Lauricella `FD`, `FA`, `FB`,
-and `FC`, respectively. The following call returns the value and all first
-partial derivatives from one convolution:
+In their open convergence domains, nonterminating principal-germ calls to
+Appell `F1`, `F2`, `F3`, and `F4` use Maple's native kernels. Their first
+derivatives are evaluated by the contiguous derivative identities. Forced
+series calls retain the Lauricella `FD`, `FA`, `FB`, and `FC` implementations,
+respectively. Thus the following call returns the value and all first partial
+derivatives from the selected representation:
 
 ```maple
 f2Vector := AppellF2(1/4,1/3,1/5,7/6,8/7,1/20,1/30,'digits'=30,'returnDerivatives'=true):
@@ -145,24 +151,40 @@ The convolution is accepted only after a degree comparison and a repeated
 working-precision comparison. Exact identical weight rows are cancelled before
 termination or pole tests; this rule includes one-variable `FB` and `FC`.
 The `FD` identity with `a=c` is applied before a lower-parameter pole test.
-Named Horn `G` and `H` series use a conservative
-interior cost test followed by a geometric-shell check, a degree comparison,
-and a working-precision comparison. The automatic `G1` dispatcher selects its
-low-rank Pfaffian connection when the two checked total-degree grids exceed a
-calibrated work threshold; `method="series"` retains the neighbor-ratio grid.
-If a numerical check fails, `"auto"` proceeds to a resource-bounded Pfaffian
-route. No Laplace, Bessel, or Mellin--Barnes formula is enabled automatically.
+Exact normalization, termination, cancellation, and product reductions precede
+numerical method selection and may supersede a forced numerical method.
+The field `methodUsed` reports the representation that is actually evaluated.
+Named Horn `G` and `H` series use a conservative interior cost test followed
+by a geometric-shell check, a degree comparison, and a working-precision
+comparison. The automatic dispatcher compares a family-specific neighbor-term
+estimate with a calibrated generic-transport threshold. The threshold depends
+on the requested precision and on whether first derivatives are requested.
+Finite support and delayed poles retain the checked neighbor recurrence.
+After the cost selector admits a neighbor candidate, `"auto"` uses the same
+bounded `maximumDegree` retry as a forced series call. Only a failed bounded
+retry proceeds to the Pfaffian route. No Laplace, Bessel, or Mellin--Barnes
+formula is enabled automatically.
 
 With `returnDiagnostics=true`, a fixed-parameter call returns a record with
 the common fields `value`, `derivatives`, `methodUsed`, `degree`,
-`errorEstimate`, `elapsedSeconds`, `convergenceTest`, and `estimatedDegree`.
-The aliases `method`, `estimatedError`, `elapsedTime`, and `certificate` are
-also present. The `errorEstimate` includes an allowance for rounding the
-public value to the requested number of significant digits. A generic
-Pfaffian value does not yet carry a transport residual; its diagnostics use
-`certificate="transport_error_unknown"` and `errorEstimate=infinity` instead
-of reporting a rounding-only error. For a rank-one generic connection, first
-derivatives are reconstructed from `dF=A_i(x)F`.
+`errorEstimate`, `elapsedSeconds`, `convergenceTest`, `estimatedDegree`,
+`workingDigits`, `errorStatus`, `compressedDimension`, and
+`branchProvenance`. The aliases `method`, `estimatedError`, `elapsedTime`, and
+`certificate` are also present. Diagnostics alone request only the scalar
+value: `derivatives=[]` and `derivativeWorkload=false`. Set both
+`returnDiagnostics=true` and `returnDerivatives=true` to include all first
+derivatives in the record. The fields `genericStepCount` and
+`genericProvenance` distinguish direct basis evaluation from state-vector
+transport, and `resourceStatus="ok"` distinguishes returned records from
+classified resource failures in the benchmark. The error status is one of `certified`,
+`bounded`, `a_posteriori`, `heuristic`, or `unknown`. Maple native values are
+marked as `heuristic`; the package does not relabel their rounding allowance
+as a proof. Exact terminating midpoint sums are `a_posteriori`, while an
+exact-cancellation midpoint formula is `heuristic`; the exact identity remains
+recorded in `certificate`. A generic Pfaffian value does not yet carry a transport residual;
+its diagnostics use `certificate="transport_error_unknown"`,
+`errorStatus="unknown"`, and `errorEstimate=infinity`. For a rank-one generic
+connection, first derivatives are reconstructed from `dF=A_i(x)F`.
 
 The file `examples/hypergeometric_fast.mpl` contains one-line Maple calls for
 generalized `pFq`, Appell `F2`, Horn `G1`, and seven-variable Lauricella `FA`.
@@ -184,31 +206,51 @@ Macaulay-system route. With `returnDiagnostics=true`, the result is a
 record containing `value`, `methodUsed`, `degree`, `errorEstimate`,
 `elapsedSeconds`, `compressedDimension`, `transportFactors`,
 `convergenceTest`, `tailBound`, `doubledDegreeDifference`, and
-`roundingError`.
+`roundingError`. It also contains `workingDigits`, `errorStatus`, and
+`branchProvenance`. For specialized Pfaffian evaluation,
+`transportKind="rank_state"`, `stateStepCount`, and `transportProvenance`
+report the state-vector workload. The legacy `transportFactors` field equals
+the state-step count for this route.
 
 The automatic dispatcher first groups exactly equal raw coordinates and sums
 their exponents before any floating-point conversion. It then applies a
-terminating series when `a` is a nonpositive integer, the product formula when
-`c=a` on the principal sheet, the grouped series for `max(abs(x_i))<1`, the
-Euler integral when its parameter and conditioning tests pass, and the
-explicit rank-`n+1` Pfaffian transport otherwise. Large exponents and small
-nonzero coordinate separations increase the internal working precision. In
-the Euler integrand, opposite exponents at nearby coordinates are combined by
-a uniformly bounded logarithmic expansion before quadrature.
+terminating series when `a` is a nonpositive integer and the product formula
+when `c=a` on the principal sheet. For a nonterminating call, it compares the
+estimated quadratic series work with a precision- and dimension-dependent
+degree budget. It uses the grouped series in the admitted interior, the Euler
+integral when its applicability and cost tests pass, and the explicit
+rank-`n+1` Pfaffian transport otherwise. Scalar and derivative requests both
+transport one rank-`n+1` state; they do not construct or transport a
+rank-by-rank fundamental matrix. The full fundamental transport remains
+available through `TransportFundamental` for explicit connection and
+monodromy computations. Large exponents and small nonzero
+coordinate separations increase the internal working precision. In the Euler
+integrand, opposite exponents at nearby coordinates are combined by a
+uniformly bounded logarithmic expansion before quadrature.
+The evaluator also preserves the stored mantissa precision of Maple `Float`
+inputs, including parameters and coordinates removed by an exact reduction.
+The field `workingDigits` reports the maximum effective precision used by the
+selected numerical kernel.
 
-Explicit waypoints force Pfaffian transport, since the grouped series and the
-straight Euler integral evaluate the principal germ at the origin and cannot
-retain a user-specified path class. The `c=a` product reduction is also
-disabled when a path is supplied.
+Explicit waypoints and branch-side requests force Pfaffian transport, since
+the grouped series and the straight Euler integral evaluate the principal germ
+at the origin and cannot retain a user-specified path class. Such a request
+retains every endpoint coordinate and every waypoint coordinate. The `c=a`
+product reduction is also disabled when a path is supplied.
 
-The specialized recurrence has a hard limit of 20,000,000 scalar updates.
-An automatic call that exceeds this limit proceeds to the next applicable
-method; a forced series call raises an error before allocating its coefficient
-arrays. A terminating series allocates only through its exact polynomial
-degree, independently of a larger `maximumDegree` setting. The generic Horn
-evaluator has a separate one-million-term limit. Conditioning guards above
-4,096 extra digits are rejected explicitly instead of attempting an
-unbounded allocation.
+For a nonterminating automatic call, `maximumDegree` is a resource ceiling,
+not a prediction of the work. Both forced and automatic series use the
+conservative tail-degree estimate and reserve one retry whose degree is at
+most 20 percent larger, plus 32 degrees. An unnecessarily large user ceiling
+therefore does not suppress a cheap series or cause a correspondingly large
+allocation. The specialized recurrence retains a separate hard limit of
+40,000,000 scalar updates, evaluated on the planned retry. If the predicted
+bounded work itself exceeds this limit, the evaluator raises an error before
+allocating an oversized coefficient array. A terminating series
+allocates only through its exact polynomial degree, independently of a larger
+`maximumDegree` setting. The generic Horn evaluator has a separate
+one-million-term limit. Conditioning guards above 4,096 extra digits are
+rejected explicitly instead of attempting an unbounded allocation.
 
 An `AffineParameter(c,s)` denotes `c+s*epsilon`. Section 4.4 of the paper is
 reproduced by
@@ -216,8 +258,7 @@ reproduced by
 ```maple
 b2 := EpsilonParameter(1,1):
 c2 := EpsilonParameter(-1,-1):
-paperExpansion := AppellF2(2,3/2,b2,4,c2,3,11/3,
-    'epsilonOrder'=1,'digits'=10):
+paperExpansion := AppellF2(2,3/2,b2,4,c2,3,11/3,'epsilonOrder'=1,'digits'=10):
 LaurentPolynomial(paperExpansion,epsilon);
 paperExpansion:-estimatedError;
 ```
@@ -450,21 +491,42 @@ from a lower-parameter pole, a value of order `10^(-435)`, explicit path
 requests, a winding that changes `2F1(1,1;2;1/2)` by magnitude `4*Pi`,
 nonpositive exact row cancellations, preallocation termination gates, `c=a`,
 exponents of size `10^40`, distinct coordinates separated by `10^(-40)`,
-cancellation that defeats a last-shell stopping rule, and Euler fallback.
+cancellation that defeats a last-shell stopping rule, and Euler fallback. The
+production-dispatch suite also checks the native `pFq` and Appell portfolios at
+15, 50, and 100 digits, the `q=0.95` Appell and `FD` routes, working-precision
+metadata, error-status metadata, delayed-pole exclusions, and degree gates
+before recurrence allocation.
 
-The benchmark warms every applicable method and compares them at the same
-point, precision, and transport settings. It requires the automatic method to
-take at most `1.25` times the fastest applicable forced method plus `0.01`
-seconds, and it imposes a five-second upper bound on the seven-variable
-principal-germ evaluation. The general benchmark applies the same gate to
-generalized `pFq`, Appell `F2`, Horn `G1`, and seven-variable Lauricella `FA`.
-It records cold and warm timings separately and checks every result against a
-forced generic value when that route passes the resource gate. The old
-degree-40 enumeration has 62,891,499
+The production benchmark clears Maple's Appell, `hypergeom`, and whole-result
+caches outside every timed call. It records load time and uncached cold time
+separately at 15, 50, and 100 digits. The general portfolio uses five warm
+samples. The Horn portfolio uses five order-interleaved samples for every one
+of `G1`--`G3` and `H1`--`H7`, separately for scalar and derivative workloads.
+Forced methods receive the same perturbed inputs, derivatives, diagnostics, path
+settings, and resource limits as `"auto"`. The gate requires
+`time(auto) <= 1.25*time(fastest) + 0.003` seconds. It covers generalized
+`pFq`, `2F1` near `q=0.95`, Appell `F2`, all ten named Horn functions, and
+seven-variable `FD`. The `FD` portfolio includes the series, Euler, Pfaffian,
+and automatic candidates in both the deep interior and the `q=0.95` case.
+At `q=0.95`, scalar evaluation selects the single Euler integral, whereas a
+value together with all seven first derivatives selects the grouped series;
+the latter computes every component in one recurrence instead of evaluating
+eight Euler integrals.
+Fast candidates receive five paired warm samples. A dominated long-running
+candidate retains its first measured sample instead of being omitted; a
+failed bounded attempt is reported as `resource_failure` or
+`numerical_failure`.
+Generic construction and numerical transport
+are timed separately. A forced 100-digit generic `pFq` baseline exceeded 30
+seconds, so the routine gate records this baseline and compares the series and
+native production candidates instead of repeating the dominated route. The
+old degree-40 enumeration has 62,891,499
 multi-indices, whereas the degree-100 grouped recurrence performs 11,500
 scalar recurrence updates including its absolute majorant. Timings depend on
 Maple and the host CPU; correctness checks use reference values and connection
 identities rather than timing alone.
+The measured crossover table is recorded in
+[`benchmark/PRODUCTION_BASELINE.md`](benchmark/PRODUCTION_BASELINE.md).
 
 ## Numerical modes and guarantees
 
@@ -499,13 +561,16 @@ next applicable method. For the series and closed-form routes,
 `errorEstimate` includes a conservative allowance for rounding the returned
 value to the requested significant digits; `roundingError` records that
 allowance together with any measured working-precision discrepancy. The
-specialized `FD` Pfaffian route also includes its transport and differential
-residuals. Generic Pfaffian diagnostics explicitly mark the transport error as
+specialized `FD` Pfaffian route also includes the boundary-series discrepancy,
+the state-transport tail estimate, and the optional reverse-state discrepancy.
+Generic Pfaffian diagnostics explicitly mark the transport error as
 unknown.
 
-The Euler and specialized `FD` Pfaffian methods retain their separate
-numerical checks. The Euler quadrature and the doubled-degree comparison are
-not interval certificates.
+The specialized `FD` Pfaffian method retains its state-transport checks. An
+Euler quadrature result has `certificate="quadrature_unverified"`,
+`errorStatus="unknown"`, and `errorEstimate=infinity`; its output-rounding
+allowance remains in `roundingError`. The Euler quadrature and the
+doubled-degree comparison are not interval certificates.
 
 For generalized `pFq`, the recurrence uses an absolute geometric tail bound
 after the parameter-dependent transient range and repeats the sum at a higher
@@ -543,6 +608,13 @@ midpoint result as certified.
 
 ## Limitations
 
+- Automatic Maple-native Appell evaluation is restricted to a nonterminating,
+  non-near-pole principal point inside the defining convergence domain. Its
+  error status is `heuristic`. Forced series and path-dependent Pfaffian routes
+  remain available.
+- The Horn and `FD` cost thresholds are calibrated by uncached 15-, 50-, and
+  100-digit wall times. The benchmark gate reports a regression when a host or
+  Maple release moves a measured crossover outside the admitted threshold.
 - The derivative basis is selected by a high-precision numerical Macaulay
   reduction. Resonant parameters can change the rank or basis; use an affine
   epsilon regulator or nonresonant parameters when necessary.
